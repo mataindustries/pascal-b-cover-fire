@@ -24,10 +24,13 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   await page.mouse.move(bounds.x + bounds.width * 0.42, bounds.y + bounds.height * 0.62);
   await page.mouse.down();
   await page.mouse.move(bounds.x + bounds.width * 0.6, bounds.y + bounds.height * 0.62, { steps: 5 });
-  await page.waitForTimeout(850);
+  await page.waitForTimeout(1_900);
+  await page.screenshot({ path: testInfo.outputPath('launch-charge-mobile.png'), fullPage: true });
   await page.mouse.up();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'ascent');
   await expect(page.locator('#hud')).toHaveClass(/is-visible/);
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: testInfo.outputPath('ascent-mobile.png'), fullPage: true });
 
   await page.locator('#debug-orbit').click();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'orbit');
@@ -43,11 +46,13 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
 
   await page.locator('#debug-boss').click();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'boss');
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(2_600);
   await page.screenshot({ path: testInfo.outputPath('boss-mobile.png'), fullPage: true });
   await page.evaluate(() => {
     for (let hit = 0; hit < 8; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
   });
+  await page.waitForTimeout(80);
+  await page.screenshot({ path: testInfo.outputPath('mothership-destruction-mobile.png'), fullPage: true });
   await expect(page.locator('#results-screen')).toHaveClass(/is-active/, { timeout: 8_000 });
   await expect(page.locator('#result-mothership')).toHaveText('DESTROYED');
   await expect(page.locator('#result-score')).not.toHaveText('0');
@@ -69,6 +74,17 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   await page.waitForTimeout(250);
   await page.mouse.up();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'ascent');
+
+  await page.locator('#debug-orbit').click();
+  await page.locator('#debug-boss').click();
+  await page.evaluate(() => {
+    for (let hit = 0; hit < 8; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
+  });
+  await expect(page.locator('#results-screen')).toHaveClass(/is-active/, { timeout: 8_000 });
+  const secondRunPools = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(secondRunPools?.targets).toBeLessThanOrEqual(30);
+  expect(secondRunPools?.particles).toBeLessThanOrEqual(120);
+  expect(secondRunPools?.haloOrbiters).toBeLessThanOrEqual(28);
 
   const documentMetrics = await page.evaluate(() => ({
     scrollY: window.scrollY,

@@ -13,6 +13,7 @@ export interface RenderState {
   aim: number;
   charge: number;
   charging: boolean;
+  steering: number;
   ascentProgress: number;
   backgroundScroll: number;
   player: PlayerState;
@@ -79,10 +80,15 @@ export class Renderer {
 
     this.drawBackground(state);
     if (state.phase === 'launch') this.drawLaunchSite(state);
-    if (state.phase === 'ascent') this.drawAscentDetails(state);
+    if (state.phase === 'ascent') {
+      this.drawLaunchAfterglow(state);
+      this.drawAscentDetails(state);
+      this.drawSteeringFeedback(state);
+    }
     if (state.phase === 'orbit' || state.phase === 'boss') {
       this.drawGravityWells(state);
       this.drawPredictedTrajectory(state);
+      this.drawSteeringFeedback(state);
     }
     if (state.phase === 'ascent' || state.phase === 'orbit' || state.phase === 'boss') {
       this.drawSpeedLines(state);
@@ -191,8 +197,18 @@ export class Renderer {
     ctx.fillStyle = '#25201A';
     ctx.fillRect(0, 360, STAGE.width, 440);
 
-    ctx.fillStyle = '#080A0C';
+    const shaftGlow = ctx.createLinearGradient(0, 790, 0, 468);
+    shaftGlow.addColorStop(0, state.charge > 0.75 ? '#FFF4D6' : COLORS.amber);
+    shaftGlow.addColorStop(0.38, state.charge > 0.52 ? '#FF6A32' : '#6A321C');
+    shaftGlow.addColorStop(1, '#080A0C');
+    ctx.globalAlpha = 0.18 + state.charge * 0.72;
+    ctx.fillStyle = shaftGlow;
     ctx.fillRect(181, 470, 88, 330);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#080A0C';
+    ctx.globalAlpha = 1 - state.charge * 0.3;
+    ctx.fillRect(189, 470, 72, 330);
+    ctx.globalAlpha = 1;
     ctx.fillStyle = '#33373A';
     ctx.fillRect(174, 466, 8, 334);
     ctx.fillRect(269, 466, 8, 334);
@@ -208,7 +224,7 @@ export class Renderer {
     ctx.fillStyle = '#111416';
     ctx.fillRect(39, 378, 108, 66);
     ctx.fillStyle = COLORS.coral;
-    const warningPulse = 0.55 + Math.sin(state.elapsed * (state.charging ? 16 : 5)) * 0.35;
+    const warningPulse = 0.55 + Math.sin(state.elapsed * (state.charging ? 16 + state.charge * 15 : 5)) * 0.35;
     ctx.globalAlpha = warningPulse;
     ctx.fillRect(52, 392, 10, 10);
     ctx.fillRect(123, 392, 10, 10);
@@ -216,6 +232,35 @@ export class Renderer {
     ctx.fillStyle = COLORS.ivory;
     ctx.font = '700 10px "Arial Narrow", sans-serif';
     ctx.fillText('SHAFT PRESSURE', 52, 424);
+
+    ctx.strokeStyle = COLORS.steel;
+    ctx.fillStyle = '#0A0E11';
+    ctx.fillRect(303, 374, 96, 74);
+    ctx.strokeRect(303, 374, 96, 74);
+    for (let index = 0; index < 5; index += 1) {
+      const activity = clamp(state.charge * 5 - index, 0, 1);
+      ctx.fillStyle = activity > 0.7 ? (index >= 3 ? COLORS.coral : COLORS.amber) : '#293138';
+      ctx.fillRect(315 + index * 15, 388, 8, 8);
+      ctx.fillStyle = COLORS.blue;
+      ctx.globalAlpha = 0.18 + activity * 0.72;
+      ctx.fillRect(315 + index * 15, 409, 8, 22 * activity);
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = COLORS.ivory;
+    ctx.font = '700 8px monospace';
+    ctx.fillText('AUTH // 57-B', 313, 440);
+
+    const strain = state.charging ? state.charge : 0;
+    ctx.strokeStyle = strain > 0.78 ? COLORS.coral : COLORS.steel;
+    ctx.globalAlpha = 0.3 + strain * 0.7;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(164 - strain * 4, 462);
+    ctx.lineTo(194, 477 + Math.sin(state.phaseTime * 26) * strain * 3);
+    ctx.moveTo(286 + strain * 4, 462);
+    ctx.lineTo(256, 477 - Math.sin(state.phaseTime * 24) * strain * 3);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
 
     ctx.strokeStyle = COLORS.ivory;
     ctx.globalAlpha = 0.16;
@@ -251,27 +296,111 @@ export class Renderer {
     ctx.restore();
   }
 
+  private drawLaunchAfterglow(state: RenderState): void {
+    if (state.phaseTime > TUNING.launchAfterglowSeconds) return;
+    const ctx = this.context;
+    const life = 1 - state.phaseTime / TUNING.launchAfterglowSeconds;
+    const strength = (0.55 + state.charge * 0.45) * life;
+    ctx.save();
+    const plume = ctx.createRadialGradient(state.player.x, 820, 8, state.player.x, 780, 250);
+    plume.addColorStop(0, '#FFFFFF');
+    plume.addColorStop(0.16, '#FFE3A1');
+    plume.addColorStop(0.46, '#FF6A3255');
+    plume.addColorStop(1, '#FFB00000');
+    ctx.globalAlpha = strength;
+    ctx.fillStyle = plume;
+    ctx.fillRect(0, 500, STAGE.width, 300);
+    ctx.strokeStyle = COLORS.ivory;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(state.player.x, 785, 75 + state.phaseTime * 260, Math.PI * 1.08, Math.PI * 1.92);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   private drawAscentDetails(state: RenderState): void {
     const ctx = this.context;
     const progress = state.ascentProgress;
     ctx.save();
-    if (progress < 0.55) {
-      for (let index = 0; index < 8; index += 1) {
-        const y = ((index * 137 + state.backgroundScroll * 0.58) % 950) - 90;
-        const x = seededNoise(index + 45) * STAGE.width;
-        const width = 74 + seededNoise(index + 80) * 105;
-        ctx.globalAlpha = (1 - progress) * 0.17;
-        ctx.fillStyle = COLORS.ivory;
+    const hazeLayers = [
+      { count: 7, scroll: 0.31, scale: 1.45, alpha: 0.08 },
+      { count: 8, scroll: 0.58, scale: 1, alpha: 0.13 },
+      { count: 6, scroll: 0.92, scale: 0.62, alpha: 0.17 },
+    ];
+    hazeLayers.forEach((layer, layerIndex) => {
+      if (progress > 0.78 - layerIndex * 0.08) return;
+      for (let index = 0; index < layer.count; index += 1) {
+        const seed = index + layerIndex * 31;
+        const y = ((seed * 137 + state.backgroundScroll * layer.scroll) % 980) - 100;
+        const x = seededNoise(seed + 45) * STAGE.width;
+        const width = (62 + seededNoise(seed + 80) * 112) * layer.scale;
+        ctx.globalAlpha = (1 - progress) * layer.alpha;
+        ctx.fillStyle = layerIndex === 0 ? '#B9D2D8' : COLORS.ivory;
         ctx.beginPath();
-        ctx.ellipse(x, y, width, 18 + width * 0.08, 0, 0, Math.PI * 2);
+        ctx.ellipse(x, y, width, 12 + width * 0.1, layerIndex === 2 ? -0.08 : 0.03, 0, Math.PI * 2);
         ctx.fill();
       }
+    });
+
+    const milestones = [
+      { at: 0.08, label: 'TROPOSPHERE // 12 KM' },
+      { at: 0.32, label: 'STRATOSPHERE // 32 KM' },
+      { at: 0.58, label: 'MESOSPHERE // 58 KM' },
+      { at: 0.8, label: 'EXOSPHERE // 80 KM' },
+    ];
+    for (const milestone of milestones) {
+      const proximity = 1 - Math.min(1, Math.abs(progress - milestone.at) / 0.09);
+      if (proximity <= 0) continue;
+      ctx.globalAlpha = 0.2 + proximity * 0.58;
+      ctx.strokeStyle = COLORS.ivory;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.moveTo(16, 690); ctx.lineTo(142, 690); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '700 9px monospace';
+      ctx.fillStyle = COLORS.ivory;
+      ctx.fillText(milestone.label, 18, 682);
     }
-    ctx.globalAlpha = 0.34;
+
+    if (progress > 0.68) {
+      const edge = smoothstep(0.68, 1, progress);
+      ctx.globalAlpha = edge * 0.35;
+      ctx.strokeStyle = COLORS.blue;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(STAGE.width / 2, 930, 410, Math.PI * 1.16, Math.PI * 1.84); ctx.stroke();
+    }
+
+    ctx.globalAlpha = 0.46;
     ctx.fillStyle = COLORS.ivory;
     ctx.font = '10px monospace';
-    ctx.fillText(`${Math.round(progress * 100)} KM`, 18, 750);
+    ctx.fillText(`${Math.round(progress * 100)} KM // ALTITUDE`, 18, 750);
     ctx.fillRect(18, 758, 82 * progress, 2);
+    ctx.restore();
+  }
+
+  private drawSteeringFeedback(state: RenderState): void {
+    if (Math.abs(state.steering) < 0.08) return;
+    const ctx = this.context;
+    const strength = Math.abs(state.steering);
+    const direction = Math.sign(state.steering);
+    ctx.save();
+    ctx.strokeStyle = state.phase === 'ascent' ? COLORS.amber : COLORS.blue;
+    ctx.globalAlpha = 0.22 + strength * 0.34;
+    ctx.lineWidth = 1.5 + strength;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath();
+    ctx.moveTo(state.player.x, state.player.y + 22);
+    ctx.quadraticCurveTo(
+      state.player.x - direction * (30 + strength * 30),
+      state.player.y + 54,
+      state.player.x - direction * (16 + strength * 42),
+      state.player.y + 96,
+    );
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.font = '700 8px monospace';
+    ctx.textAlign = direction > 0 ? 'right' : 'left';
+    ctx.fillText('VECTOR BEND', state.player.x - direction * 22, state.player.y + 112);
     ctx.restore();
   }
 
@@ -292,13 +421,36 @@ export class Renderer {
       ctx.arc(0, 0, well.radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = COLORS.blue;
-      ctx.globalAlpha = 0.22;
+      ctx.globalAlpha = 0.3;
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 11]);
       ctx.beginPath();
       ctx.ellipse(0, 0, well.radius * 0.64, well.radius * 0.25, 0.35, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.setLineDash([2, 7]);
+      ctx.globalAlpha = 0.13;
+      ctx.beginPath(); ctx.arc(0, 0, well.radius * 0.78, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, well.radius * 0.44, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.48;
+      ctx.fillStyle = COLORS.blue;
+      ctx.font = '700 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('GRAVITY SHEAR', 0, well.radius * 0.62);
       ctx.restore();
+
+      const distance = Math.hypot(well.x - state.player.x, well.y - state.player.y);
+      if (distance < well.radius * 1.45) {
+        ctx.save();
+        ctx.strokeStyle = COLORS.blue;
+        ctx.globalAlpha = 0.12 + (1 - distance / (well.radius * 1.45)) * 0.38;
+        ctx.setLineDash([3, 6]);
+        ctx.beginPath();
+        ctx.moveTo(state.player.x, state.player.y);
+        ctx.quadraticCurveTo((state.player.x + well.x) / 2 + 18, (state.player.y + well.y) / 2 - 12, well.x, well.y);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
@@ -341,14 +493,14 @@ export class Renderer {
     const angle = Math.atan2(state.player.vy, state.player.vx);
     ctx.save();
     ctx.strokeStyle = state.phase === 'ascent' ? COLORS.ivory : COLORS.blue;
-    ctx.globalAlpha = 0.1 + intensity * 0.2;
-    ctx.lineWidth = 1;
-    const count = state.reducedMotion ? 8 : 18;
+    ctx.globalAlpha = 0.06 + intensity * (state.phase === 'ascent' ? 0.3 : 0.2);
+    const count = state.reducedMotion ? 7 : Math.round(10 + intensity * 14);
     for (let index = 0; index < count; index += 1) {
       const seed = index + Math.floor(state.backgroundScroll * 0.02);
       const x = seededNoise(seed * 3 + 1) * STAGE.width;
       const y = (seededNoise(seed * 3 + 2) * STAGE.height + state.backgroundScroll * 0.7) % STAGE.height;
-      const length = 18 + seededNoise(seed * 3 + 3) * 52 * intensity;
+      const length = 12 + seededNoise(seed * 3 + 3) * (42 + intensity * 58) * intensity;
+      ctx.lineWidth = 0.7 + seededNoise(seed * 3 + 5) * 1.3;
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineTo(x - Math.cos(angle) * length, y - Math.sin(angle) * length);
@@ -363,7 +515,9 @@ export class Renderer {
     ctx.translate(target.x, target.y);
     ctx.rotate(target.rotation);
     const damaged = target.hp < target.maxHp;
-    ctx.strokeStyle = damaged ? COLORS.coral : COLORS.steel;
+    ctx.shadowColor = damaged ? COLORS.coral : target.kind === 'drone' ? COLORS.coral : COLORS.blue;
+    ctx.shadowBlur = damaged ? 9 : 3;
+    ctx.strokeStyle = damaged ? COLORS.coral : COLORS.ivory;
     ctx.fillStyle = target.kind === 'drone' ? '#263B48' : COLORS.gunmetal;
     ctx.lineWidth = 2;
 
@@ -422,6 +576,8 @@ export class Renderer {
         ctx.fillRect(-9, -12, 18, 24);
         ctx.strokeStyle = damaged ? COLORS.coral : COLORS.ivory;
         ctx.strokeRect(-9, -12, 18, 24);
+        ctx.fillStyle = COLORS.amber;
+        ctx.fillRect(-2, -18, 4, 6);
         break;
       }
       case 'tank':
@@ -431,6 +587,8 @@ export class Renderer {
         ctx.fillStyle = '#151A1E';
         ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(7, 0); ctx.lineTo(29, 0); ctx.stroke();
+        ctx.strokeStyle = COLORS.amber;
+        ctx.strokeRect(-13, -8, 8, 6);
         break;
       case 'antenna':
         ctx.beginPath();
@@ -440,6 +598,8 @@ export class Renderer {
         ctx.fill();
         ctx.stroke();
         ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-18, 0); ctx.stroke();
+        ctx.fillStyle = COLORS.coral;
+        ctx.beginPath(); ctx.arc(-18, 0, 2.5, 0, Math.PI * 2); ctx.fill();
         break;
       case 'asteroid':
         ctx.fillStyle = '#35383A';
@@ -468,6 +628,7 @@ export class Renderer {
         ctx.beginPath(); ctx.moveTo(-9, -4); ctx.lineTo(4, -8); ctx.lineTo(9, 5); ctx.lineTo(-5, 8); ctx.closePath(); ctx.fill();
         break;
     }
+    ctx.shadowBlur = 0;
     ctx.restore();
   }
 
@@ -479,6 +640,20 @@ export class Renderer {
     const entranceScale = 0.82 + boss.entrance * 0.18;
     ctx.scale(entranceScale, entranceScale);
     ctx.globalAlpha = boss.destroyed ? clamp(1 - (phaseTime - (TUNING.bossDuration - boss.timeRemaining)) * 0.3, 0, 1) : 1;
+
+    const remainingRatio = boss.hp / boss.maxHp;
+    const shieldAlpha = boss.entrance < 1
+      ? 0.18 + boss.entrance * 0.44
+      : 0.12 + Math.min(0.42, boss.contactCooldown * 0.72);
+    ctx.strokeStyle = boss.hp > 2.5 ? COLORS.blue : COLORS.coral;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = shieldAlpha;
+    ctx.setLineDash([16, 9]);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 157 + Math.sin(phaseTime * 3) * 3, 87, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
 
     ctx.shadowColor = COLORS.coral;
     ctx.shadowBlur = boss.flash > 0 ? 22 : 0;
@@ -511,11 +686,15 @@ export class Renderer {
     ctx.beginPath(); ctx.moveTo(-42, -48); ctx.lineTo(-19, 30); ctx.lineTo(19, 30); ctx.lineTo(42, -48); ctx.stroke();
 
     const weakpoints = [-72, 0, 72];
-    const remainingRatio = boss.hp / boss.maxHp;
     weakpoints.forEach((offset, index) => {
       const alive = remainingRatio > index / weakpoints.length;
+      const pulse = 0.74 + Math.sin(phaseTime * 7 + index) * 0.22;
+      ctx.strokeStyle = alive ? COLORS.ivory : COLORS.gunmetal;
+      ctx.globalAlpha = alive ? pulse * 0.5 : 0.18;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(offset, index === 1 ? -12 : 8, 19 + pulse * 2, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = alive ? COLORS.coral : '#12161A';
-      ctx.globalAlpha = alive ? 0.72 + Math.sin(phaseTime * 7 + index) * 0.2 : 0.45;
+      ctx.globalAlpha = alive ? pulse : 0.45;
       ctx.beginPath(); ctx.arc(offset, index === 1 ? -12 : 8, 12, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = alive ? COLORS.ivory : COLORS.gunmetal; ctx.stroke();
     });
@@ -523,7 +702,9 @@ export class Renderer {
     ctx.fillStyle = COLORS.ivory;
     ctx.font = '700 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('UNKNOWN ORBITAL PLATFORM', 0, -94);
+    if (!boss.destroyed) {
+      ctx.fillText(boss.contactCooldown > 0.08 ? 'DEFENSE FIELD CYCLING' : 'STRIKE CORAL WEAK POINTS', 0, -94);
+    }
     ctx.restore();
   }
 
@@ -535,10 +716,18 @@ export class Renderer {
     ctx.translate(state.player.x, state.player.y);
     ctx.strokeStyle = color;
     ctx.globalAlpha = 0.1 + Math.min(state.halo.mass / 60, 0.25) + state.halo.pulse * 0.18;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 + state.halo.pulse * 2.5;
     ctx.beginPath();
     ctx.ellipse(0, 0, state.halo.radius, state.halo.radius * 0.7, state.player.rotation * 0.08, 0, Math.PI * 2);
     ctx.stroke();
+    if (state.halo.mass >= 8) {
+      ctx.globalAlpha = 0.05 + Math.min(0.18, state.halo.mass / 220) + state.halo.pulse * 0.12;
+      ctx.setLineDash([5, 8]);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, state.halo.radius * 0.86, state.halo.radius * 0.57, -state.player.rotation * 0.05, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     for (const orbiter of state.halo.orbiters) {
       if (!orbiter.active) continue;
@@ -581,20 +770,29 @@ export class Renderer {
     const angle = speed > 5 ? Math.atan2(player.vy, player.vx) : -Math.PI / 2 + state.aim;
 
     if (speed > 40) {
-      const trailLength = clamp(speed * 0.22, 26, 118);
+      const launchBoost = state.phase === 'ascent'
+        ? (1 - clamp(state.phaseTime / 1.8, 0, 1)) * (0.45 + state.charge * 0.85)
+        : 0;
+      const trailLength = clamp(speed * (0.22 + launchBoost * 0.12), 26, 168);
       const gradient = ctx.createLinearGradient(
         x,
         y,
         x - Math.cos(angle) * trailLength,
         y - Math.sin(angle) * trailLength,
       );
-      gradient.addColorStop(0, state.phase === 'ascent' ? COLORS.coral : COLORS.blue);
+      gradient.addColorStop(0, state.phase === 'ascent' ? COLORS.ivory : COLORS.blue);
+      gradient.addColorStop(0.18, state.phase === 'ascent' ? COLORS.coral : COLORS.blue);
       gradient.addColorStop(1, '#44C7F400');
       ctx.save();
       ctx.strokeStyle = gradient;
-      ctx.lineWidth = 8;
+      ctx.globalAlpha = 0.72 + launchBoost * 0.28;
+      ctx.lineWidth = 7 + launchBoost * 9;
       ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - Math.cos(angle) * trailLength, y - Math.sin(angle) * trailLength); ctx.stroke();
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = state.phase === 'ascent' ? COLORS.ivory : COLORS.blue;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - Math.cos(angle) * trailLength * 0.66, y - Math.sin(angle) * trailLength * 0.66); ctx.stroke();
       ctx.restore();
     }
 
@@ -608,6 +806,16 @@ export class Renderer {
     ctx.strokeStyle = hot > 0.58 ? COLORS.coral : COLORS.ivory;
     ctx.lineWidth = 3.5;
     ctx.beginPath(); ctx.arc(0, 0, player.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (hot > 0.12) {
+      const travelAngle = angle - player.rotation;
+      ctx.strokeStyle = hot > 0.6 ? COLORS.ivory : COLORS.coral;
+      ctx.lineWidth = 3 + hot * 2;
+      ctx.globalAlpha = 0.52 + hot * 0.42;
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius + 2.2, travelAngle - 0.85, travelAngle + 0.85);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.shadowBlur = 0;
     ctx.fillStyle = COLORS.steel;
     ctx.beginPath(); ctx.arc(0, 0, player.radius * 0.72, 0, Math.PI * 2); ctx.fill();
@@ -634,7 +842,18 @@ export class Renderer {
       if (!particle.active) continue;
       ctx.globalAlpha = clamp(particle.life / particle.maxLife, 0, 1);
       ctx.fillStyle = particle.color;
-      ctx.fillRect(particle.x - particle.size * 0.5, particle.y - particle.size * 0.5, particle.size, particle.size);
+      const speed = Math.hypot(particle.vx, particle.vy);
+      if (speed > 120) {
+        const length = clamp(speed * 0.025, particle.size, particle.size * 3.8);
+        const angle = Math.atan2(particle.vy, particle.vx);
+        ctx.save();
+        ctx.translate(particle.x, particle.y);
+        ctx.rotate(angle);
+        ctx.fillRect(-length, -particle.size * 0.35, length, particle.size * 0.7);
+        ctx.restore();
+      } else {
+        ctx.fillRect(particle.x - particle.size * 0.5, particle.y - particle.size * 0.5, particle.size, particle.size);
+      }
     }
     for (const wave of effects.shockwaves) {
       if (!wave.active) continue;

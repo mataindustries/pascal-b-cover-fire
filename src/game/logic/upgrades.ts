@@ -3,7 +3,7 @@ import type { PersistedState, UpgradeKey } from '../types';
 
 export const upgradePrice = (level: number): number => {
   const safeLevel = Math.max(0, Math.floor(level));
-  return Math.round(TUNING.firstUpgradeCost * (1 + safeLevel * 0.85 + safeLevel * safeLevel * 0.32));
+  return TUNING.firstUpgradeCost + safeLevel * 140 + safeLevel * safeLevel * 20;
 };
 
 export interface PurchaseResult {
@@ -34,7 +34,7 @@ export const purchaseUpgrade = (state: PersistedState, key: UpgradeKey): Purchas
   };
 };
 
-export const launchVelocityMultiplier = (level: number): number => 1 + level * 0.07;
-export const coverIntegrityBonus = (level: number): number => level * 12;
-export const impactPowerMultiplier = (level: number): number => 1 + level * 0.12;
-export const magneticCaptureMultiplier = (level: number): number => 1 + level * 0.16;
+export const launchVelocityMultiplier = (level: number): number => 1 + level * 0.09;
+export const coverIntegrityBonus = (level: number): number => level * 18;
+export const impactPowerMultiplier = (level: number): number => 1 + level * 0.18;
+export const magneticCaptureMultiplier = (level: number): number => 1 + level * 0.22;

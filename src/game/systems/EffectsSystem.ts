@@ -154,6 +154,31 @@ export class EffectsSystem {
     if (tier === 3) this.flash = Math.max(this.flash, this.reducedMotion ? 0.16 : 0.34);
   }
 
+  public launch(x: number, y: number, charge: number): void {
+    const strength = clamp(charge, 0, 1);
+    this.ring(x, y + 9, 118 + strength * 82, COLORS.ivory, 3 + strength * 2);
+    this.ring(x, y + 18, 68 + strength * 58, COLORS.amber, 2);
+    this.burst(x, y + 20, 18 + Math.round(strength * 18), COLORS.amber, 260 + strength * 170, Math.PI / 2);
+    this.burst(x, y + 26, 14 + Math.round(strength * 12), '#8C7657', 150 + strength * 110, Math.PI / 2);
+    this.burst(x, y + 12, 8 + Math.round(strength * 8), COLORS.ivory, 370 + strength * 140, Math.PI / 2);
+  }
+
+  public capture(fromX: number, fromY: number, toX: number, toY: number, mass: number): void {
+    const direction = Math.atan2(toY - fromY, toX - fromX);
+    const amount = clamp(Math.round(4 + mass * 1.6), 4, 11);
+    this.burst(fromX, fromY, amount, COLORS.blue, 150 + mass * 18, direction);
+    this.ring(toX, toY, 34 + Math.min(24, mass * 4), COLORS.blue, 1.5);
+  }
+
+  public haloThreshold(x: number, y: number, tier: number): void {
+    const radius = 62 + tier * 19;
+    const color = tier >= 3 ? COLORS.lime : tier === 2 ? COLORS.amber : COLORS.blue;
+    this.ring(x, y, radius, color, 2 + tier * 0.55);
+    this.ring(x, y, radius * 0.68, COLORS.ivory, 1.5);
+    this.shake(2.5 + tier * 1.2, 0.16 + tier * 0.035);
+    this.hitStop = Math.max(this.hitStop, 0.025 + tier * 0.012);
+  }
+
   public label(text: string, x: number, y: number, color: string = COLORS.ivory, scale = 1): void {
     const impactText = this.texts.find((candidate) => !candidate.active)
       ?? this.texts.reduce((oldest, candidate) => candidate.life < oldest.life ? candidate : oldest);
@@ -183,5 +208,9 @@ export class EffectsSystem {
     this.shakeTime = 0;
     this.flash = 0;
     this.hitStop = 0;
+  }
+
+  public clearLabels(): void {
+    for (const text of this.texts) text.active = false;
   }
 }

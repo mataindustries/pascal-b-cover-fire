@@ -109,6 +109,8 @@ export class Game {
   private fps = 60;
   private hudTimer = 0;
   private debugTimer = 0;
+  private chargeAuthorizationStage = 0;
+  private haloThresholdStage = 0;
 
   public constructor(app: HTMLElement) {
     this.persisted = loadPersistedState();
@@ -184,6 +186,7 @@ export class Game {
       aim: this.aim,
       charge: this.charge,
       charging: this.charging,
+      steering: this.input.getSteering(),
       ascentProgress: this.ascentProgress,
       backgroundScroll: this.backgroundScroll,
       player: this.player,
@@ -242,7 +245,15 @@ export class Game {
     if (this.charging) {
       this.charge = clamp(this.charge + delta / TUNING.chargeSeconds, 0, 1);
       this.audio.updateCharge(this.charge);
-      this.effects.shake(this.charge * 1.4, 0.04);
+      this.effects.shake(0.35 + this.charge * 2.1, 0.04);
+      const authorizationStage = Math.min(4, Math.floor(this.charge * 4.05));
+      if (authorizationStage > this.chargeAuthorizationStage) {
+        this.chargeAuthorizationStage = authorizationStage;
+        this.audio.chargeAuthorization(authorizationStage);
+        const labels = ['PRESSURE RISING', 'INTERLOCKS CLEAR', 'AUTHORIZATION 57-B', 'MAXIMUM YIELD'];
+        const label = labels[authorizationStage - 1];
+        if (label) this.effects.label(label, STAGE.width / 2, 438, authorizationStage === 4 ? COLORS.coral : COLORS.ivory, 0.86);
+      }
       if (this.charge >= 1 && Math.floor(this.phaseTime * 5) % 4 === 0) this.effects.flash = 0.035;
     }
     this.player.rotation += delta * (0.7 + this.charge * 5);
@@ -263,6 +274,7 @@ export class Game {
     this.player.rotation += delta * (9 + Math.abs(this.player.vx) * 0.018);
     this.backgroundScroll += Math.abs(this.player.vy) * delta * 0.88;
     this.player.heat = clamp(this.player.heat + delta * (0.028 + this.charge * 0.013), 0, 1);
+    this.audio.updateAscent(this.ascentProgress, Math.abs(this.player.vy) / 730, steer);
 
     this.world.update(delta, 'ascent', Math.abs(this.player.vy) * 0.72);
     this.handleTargetCollisions('ascent');
@@ -296,7 +308,7 @@ export class Game {
     }
 
     this.boss.entrance = clamp(this.phaseTime / 2.4, 0, 1);
-    this.boss.y = -115 + this.boss.entrance * 325;
+    this.boss.y = -115 + this.boss.entrance * 375;
     this.boss.x = STAGE.width / 2 + Math.sin(Math.max(0, this.phaseTime - 2.4) * 0.55) * 46;
     this.boss.timeRemaining = Math.max(0, TUNING.bossDuration - this.phaseTime);
     this.boss.contactCooldown = Math.max(0, this.boss.contactCooldown - delta);
@@ -392,7 +404,8 @@ export class Game {
     const impactMultiplier = impactPowerMultiplier(this.persisted.upgrades.reinforcedCover);
     target.hp -= direct ? impactMultiplier : 1;
     const tier: 1 | 2 | 3 = target.maxHp > 1 || target.kind === 'drone' ? 2 : 1;
-    this.effects.impact(target.x, target.y, tier, target.kind === 'drone' ? COLORS.coral : COLORS.amber);
+    const impactDirection = Math.atan2(this.player.vy, this.player.vx);
+    this.effects.impact(target.x, target.y, tier, target.kind === 'drone' ? COLORS.coral : COLORS.amber, impactDirection);
     this.audio.impact(tier);
 
     if (direct) {
@@ -423,11 +436,10 @@ export class Game {
       this.player.vy -= 9;
     } else {
       this.halo.addMass(target.mass, magneticCaptureMultiplier(this.persisted.upgrades.magneticRim));
-      if (beforeMass < TUNING.orbitFinaleMass && this.halo.mass >= TUNING.orbitFinaleMass) {
-        this.effects.label('MASS CRITICAL', this.player.x, this.player.y - this.halo.radius - 15, COLORS.lime, 1.15);
-        this.ui.announce('MASS CRITICAL', 'warning');
-        this.audio.warning();
-      }
+      const capturedMass = this.halo.mass - beforeMass;
+      this.effects.capture(target.x, target.y, this.player.x, this.player.y, capturedMass);
+      this.effects.label(`+${capturedMass.toFixed(1)} t // HALO`, target.x, target.y - 18, COLORS.blue, 0.74);
+      this.handleHaloThresholds(beforeMass);
     }
 
     if (this.combo.count === 6) {
@@ -469,8 +481,11 @@ export class Game {
     this.combo = registerComboHit(this.combo, TUNING.comboWindow);
     this.score += impactScore(920, this.combo.count, this.halo.mass);
     this.effects.impact(this.boss.x, this.boss.y, 3, COLORS.coral);
-    this.effects.label('HULL BREACH', this.boss.x, this.boss.y - 72, COLORS.ivory, 1.08);
+    const remainingRatio = this.boss.hp / this.boss.maxHp;
+    const damageLabel = remainingRatio > 0.66 ? 'SHIELD FRACTURE' : remainingRatio > 0.28 ? 'HULL BREACH' : 'CORE EXPOSED';
+    this.effects.label(damageLabel, this.boss.x, this.boss.y - 72, remainingRatio <= 0.28 ? COLORS.lime : COLORS.ivory, 1.08);
     this.audio.impact(3);
+    this.audio.bossDamage(remainingRatio);
     if (this.boss.hp <= 0) this.destroyBoss();
   }
 
@@ -486,6 +501,7 @@ export class Game {
     this.effects.hitStop = 0.13;
     this.effects.flash = this.reducedMotion ? 0.18 : 0.66;
     this.effects.shake(11, 0.6);
+    this.effects.clearLabels();
     for (let index = 0; index < 6; index += 1) {
       const angle = index / 6 * Math.PI * 2;
       const x = this.boss.x + Math.cos(angle) * 72;
@@ -495,7 +511,7 @@ export class Game {
     }
     this.effects.label('ONE FRAME. ZERO SURVIVORS.', STAGE.width / 2, 165, COLORS.ivory, 1.2);
     this.ui.announce('MOTHERSHIP DESTROYED', 'victory');
-    this.audio.victory();
+    this.audio.bossDestroyed();
   }
 
   private updateVelocityRecord(): void {
@@ -520,6 +536,7 @@ export class Game {
   private enterOrbit(): void {
     if (this.phase === 'orbit') return;
     this.setPhase('orbit');
+    this.audio.stopAscent();
     this.player.x = clamp(this.player.x, 80, STAGE.width - 80);
     this.player.y = 610;
     this.player.previousX = this.player.x;
@@ -550,11 +567,10 @@ export class Game {
     this.charging = false;
     this.charge = Math.max(this.charge, TUNING.minimumCharge);
     this.audio.stopCharge(true);
-    this.effects.hitStop = TUNING.launchHitStop;
-    this.effects.flash = this.reducedMotion ? 0.2 : 0.72;
-    this.effects.shake(10, 0.42);
-    this.effects.ring(this.player.x, this.player.y, 145, COLORS.ivory, 4);
-    this.effects.burst(this.player.x, this.player.y + 12, 34, COLORS.amber, 320, Math.PI / 2);
+    this.effects.hitStop = TUNING.launchHitStop * (0.72 + this.charge * 0.28);
+    this.effects.flash = this.reducedMotion ? 0.16 : 0.48 + this.charge * 0.24;
+    this.effects.shake(5.5 + this.charge * 5, 0.28 + this.charge * 0.18);
+    this.effects.launch(this.player.x, this.player.y, this.charge);
 
     const baseVelocity = (540 + this.charge * 190)
       * launchVelocityMultiplier(this.persisted.upgrades.launchPressure);
@@ -564,6 +580,7 @@ export class Game {
     this.player.y = 548;
     this.setPhase('ascent');
     this.world.startAscent();
+    this.audio.startAscent();
     this.maximumVelocity = this.currentVelocityKmS();
     this.ui.announce('SHAFT RELEASE // ASCENT');
   }
@@ -592,9 +609,11 @@ export class Game {
     this.input.clearPointerSteering();
     this.charging = false;
     this.audio.stopCharge(false);
+    this.audio.stopAscent();
     this.setPhase('results');
     this.ui.showResults(outcome, stats, this.persisted, reason);
     this.ui.syncSettings(this.persisted);
+    this.audio.resultsTally(victory);
   }
 
   private startFromTitle(): void {
@@ -614,6 +633,7 @@ export class Game {
 
   private beginRun(): void {
     this.audio.stopCharge(false);
+    this.audio.stopAscent();
     this.effects.clear();
     this.halo.reset();
     this.world.reset();
@@ -632,6 +652,8 @@ export class Game {
     this.maximumVelocity = 0;
     this.heatOvertime = 0;
     this.bossEndTimer = 0;
+    this.chargeAuthorizationStage = 0;
+    this.haloThresholdStage = 0;
     this.paused = false;
     this.accumulator = 0;
     this.input.clearPointerSteering();
@@ -680,6 +702,7 @@ export class Game {
     if (!activeRunPhase(this.phase) || this.paused) return;
     this.paused = true;
     this.audio.stopCharge(false);
+    this.audio.stopAscent();
     this.charging = false;
     this.ui.setPaused(true);
   }
@@ -692,6 +715,7 @@ export class Game {
     this.ui.openSettings(false);
     this.ui.setPaused(false);
     void this.audio.unlock();
+    if (this.phase === 'ascent') this.audio.startAscent();
   }
 
   private setMuted(muted: boolean): void {
@@ -772,6 +796,21 @@ export class Game {
     this.player.previousY = this.player.y;
   }
 
+  private handleHaloThresholds(previousMass: number): void {
+    for (let index = this.haloThresholdStage; index < TUNING.haloThresholds.length; index += 1) {
+      const threshold = TUNING.haloThresholds[index];
+      if (threshold === undefined || previousMass >= threshold || this.halo.mass < threshold) continue;
+      this.haloThresholdStage = index + 1;
+      const finalCritical = threshold === TUNING.orbitFinaleMass;
+      const label = finalCritical ? 'MASS CRITICAL' : `HALO STAGE ${index + 1}`;
+      const color = index >= 3 ? COLORS.lime : index >= 1 ? COLORS.amber : COLORS.blue;
+      this.effects.haloThreshold(this.player.x, this.player.y, index + 1);
+      this.effects.label(label, this.player.x, this.player.y - this.halo.radius - 15, color, 1.02 + index * 0.05);
+      this.ui.announce(finalCritical ? 'MASS CRITICAL // INTERCEPT READY' : `${label} // CAPTURE RADIUS INCREASED`, finalCritical ? 'warning' : 'neutral');
+      this.audio.haloThreshold(index + 1);
+    }
+  }
+
   private debugJumpToOrbit(): void {
     if (!this.debugEnabled) return;
     if (!activeRunPhase(this.phase)) this.beginRun();
@@ -791,7 +830,9 @@ export class Game {
     this.debugJumpToOrbit();
     if (this.phase === 'orbit') {
       this.halo.addMass(28, 1);
-      this.score += 4_000;
+      // Keep the debug-assisted victory representative of a good early run so the
+      // browser loop can verify a first upgrade without changing live rewards.
+      this.score += 80_000;
       this.enterBoss();
     }
   }

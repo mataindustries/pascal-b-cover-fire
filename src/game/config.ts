@@ -25,6 +25,7 @@ export const TUNING = {
   chargeSeconds: 2.25,
   minimumCharge: 0.18,
   launchHitStop: 0.085,
+  launchAfterglowSeconds: 0.72,
   ascentDuration: 15,
   orbitMinimumDuration: 30,
   orbitForcedFinaleTime: 40,
@@ -40,26 +41,27 @@ export const TUNING = {
   maxParticles: 120,
   maxShockwaves: 12,
   maxImpactTexts: 8,
-  firstUpgradeCost: 40,
+  haloThresholds: [8, 18, 28, 38] as readonly number[],
+  firstUpgradeCost: 180,
 } as const;
 
 export const UPGRADE_DEFINITIONS = {
   launchPressure: {
     name: 'Launch Pressure',
     code: 'LP',
-    description: '+7% initial velocity per level',
+    description: '+9% initial velocity per level',
     maxLevel: 5,
   },
   reinforcedCover: {
     name: 'Reinforced Cover',
     code: 'RC',
-    description: '+12 integrity and impact power',
+    description: '+18 integrity and impact power',
     maxLevel: 5,
   },
   magneticRim: {
     name: 'Magnetic Rim',
     code: 'MR',
-    description: '+16% halo mass capture',
+    description: '+22% halo mass capture',
     maxLevel: 5,
   },
 } as const;
