@@ -1,5 +1,6 @@
 import { STAGE } from '../config';
-import { clamp } from '../math';
+import { clamp, magnitude } from '../math';
+import type { Vec2 } from '../types';
 
 export interface PointerInput {
   x: number;
@@ -30,7 +31,7 @@ export class InputManager {
   private startY = 0;
   private lastX = 0;
   private lastY = 0;
-  private pointerSteer = 0;
+  private pointerSteer: Vec2 = { x: 0, y: 0 };
 
   public constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -40,23 +41,39 @@ export class InputManager {
     canvas.addEventListener('pointermove', this.handlePointerMove, { passive: false });
     canvas.addEventListener('pointerup', this.handlePointerUp, { passive: false });
     canvas.addEventListener('pointercancel', this.handlePointerUp, { passive: false });
+    canvas.addEventListener('lostpointercapture', this.handleLostPointerCapture);
     canvas.addEventListener('contextmenu', this.preventDefault);
     window.addEventListener('keydown', this.handleKeyDown, { passive: false });
     window.addEventListener('keyup', this.handleKeyUp, { passive: false });
+    window.addEventListener('blur', this.handleBlur);
   }
 
-  public getSteering(): number {
+  public getSteering(): Vec2 {
     const keyboard = this.getKeyboardSteering();
-    return clamp(keyboard || this.pointerSteer, -1, 1);
+    return magnitude(keyboard.x, keyboard.y) > 0 ? keyboard : this.pointerSteer;
   }
 
-  public getKeyboardSteering(): number {
-    return (this.keys.has('ArrowRight') || this.keys.has('KeyD') ? 1 : 0)
+  public getKeyboardSteering(): Vec2 {
+    const x = (this.keys.has('ArrowRight') || this.keys.has('KeyD') ? 1 : 0)
       - (this.keys.has('ArrowLeft') || this.keys.has('KeyA') ? 1 : 0);
+    const y = (this.keys.has('ArrowDown') || this.keys.has('KeyS') ? 1 : 0)
+      - (this.keys.has('ArrowUp') || this.keys.has('KeyW') ? 1 : 0);
+    const length = magnitude(x, y);
+    return length > 1 ? { x: x / length, y: y / length } : { x, y };
   }
 
   public clearPointerSteering(): void {
-    this.pointerSteer = 0;
+    this.pointerSteer = { x: 0, y: 0 };
+    this.pointerId = null;
+  }
+
+  public reset(): void {
+    if (this.pointerId !== null && this.canvas.hasPointerCapture(this.pointerId)) {
+      this.canvas.releasePointerCapture(this.pointerId);
+    }
+    this.pointerId = null;
+    this.pointerSteer = { x: 0, y: 0 };
+    this.keys.clear();
   }
 
   public destroy(): void {
@@ -64,16 +81,21 @@ export class InputManager {
     this.canvas.removeEventListener('pointermove', this.handlePointerMove);
     this.canvas.removeEventListener('pointerup', this.handlePointerUp);
     this.canvas.removeEventListener('pointercancel', this.handlePointerUp);
+    this.canvas.removeEventListener('lostpointercapture', this.handleLostPointerCapture);
     this.canvas.removeEventListener('contextmenu', this.preventDefault);
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.handleBlur);
   }
 
   private toStage(event: PointerEvent): { x: number; y: number } {
     const bounds = this.canvas.getBoundingClientRect();
+    const scale = STAGE.width / Math.max(1, bounds.width);
+    const logicalHeight = clamp(STAGE.width * bounds.height / Math.max(1, bounds.width), STAGE.height, 1_000);
+    const verticalOffset = (logicalHeight - STAGE.height) * 0.5;
     return {
-      x: (event.clientX - bounds.left) * STAGE.width / bounds.width,
-      y: (event.clientY - bounds.top) * STAGE.height / bounds.height,
+      x: (event.clientX - bounds.left) * scale,
+      y: (event.clientY - bounds.top) * scale - verticalOffset,
     };
   }
 
@@ -100,7 +122,7 @@ export class InputManager {
     this.startY = point.y;
     this.lastX = point.x;
     this.lastY = point.y;
-    this.pointerSteer = 0;
+    this.pointerSteer = { x: 0, y: 0 };
     this.canvas.setPointerCapture(event.pointerId);
     this.callbacks.onPointerDown(this.sample(event));
   };
@@ -109,7 +131,12 @@ export class InputManager {
     if (event.pointerId !== this.pointerId) return;
     event.preventDefault();
     const input = this.sample(event);
-    this.pointerSteer = clamp(input.totalX / 76, -1, 1);
+    const rawX = clamp(input.totalX / 82, -1, 1);
+    const rawY = clamp(input.totalY / 82, -1, 1);
+    const length = magnitude(rawX, rawY);
+    this.pointerSteer = length > 1
+      ? { x: rawX / length, y: rawY / length }
+      : { x: rawX, y: rawY };
     this.callbacks.onPointerMove(input);
     this.lastX = input.x;
     this.lastY = input.y;
@@ -121,11 +148,11 @@ export class InputManager {
     const input = this.sample(event);
     this.callbacks.onPointerUp(input);
     this.pointerId = null;
-    this.pointerSteer = 0;
+    this.pointerSteer = { x: 0, y: 0 };
   };
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
-    if (['ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(event.code)) event.preventDefault();
     if (event.repeat) return;
     this.keys.add(event.code);
     if (event.code === 'Space') this.callbacks.onChargeStart();
@@ -134,10 +161,17 @@ export class InputManager {
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
-    if (['ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(event.code)) event.preventDefault();
     this.keys.delete(event.code);
     if (event.code === 'Space') this.callbacks.onChargeEnd();
   };
 
   private readonly preventDefault = (event: Event): void => event.preventDefault();
+
+  private readonly handleLostPointerCapture = (): void => {
+    this.pointerId = null;
+    this.pointerSteer = { x: 0, y: 0 };
+  };
+
+  private readonly handleBlur = (): void => this.reset();
 }

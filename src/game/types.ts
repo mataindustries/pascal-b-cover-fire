@@ -17,11 +17,15 @@ export type TargetKind =
   | 'aircraft'
   | 'satellite'
   | 'solar'
-  | 'tank'
-  | 'antenna'
-  | 'asteroid'
   | 'debris'
-  | 'drone';
+  | 'swarmer'
+  | 'mine'
+  | 'splitter'
+  | 'splitterFragment';
+export type FormationKind = 'wedge' | 'arc' | 'ring' | 'spiral' | 'minefield' | 'splitter' | 'mixed';
+export type DamageSource = 'cover' | 'halo' | 'shockwave' | 'burst' | 'mine';
+export type HaloTier = 0 | 1 | 2 | 3 | 4;
+export type ExplosionTier = 'spark' | 'burst' | 'cascade' | 'catastrophe';
 
 export interface Vec2 {
   x: number;
@@ -39,7 +43,7 @@ export interface PlayerState extends Vec2 {
   maxIntegrity: number;
   heat: number;
   stalledFor: number;
-  impactCooldown: number;
+  burstSafetyTimer: number;
 }
 
 export interface WorldTarget extends Vec2 {
@@ -55,6 +59,15 @@ export interface WorldTarget extends Vec2 {
   rotation: number;
   spin: number;
   hitCooldown: number;
+  coverHitCooldown: number;
+  age: number;
+  behaviorPhase: number;
+  formationId: number;
+  telegraph: number;
+  primeTimer: number;
+  primed: boolean;
+  chainDepth: number;
+  contactDamage: number;
   active: boolean;
 }
 
@@ -72,6 +85,18 @@ export interface HaloOrbiter {
   size: number;
   shape: number;
   brightness: number;
+  band: number;
+}
+
+export interface BossWeakPoint extends Vec2 {
+  index: number;
+  offsetX: number;
+  offsetY: number;
+  hp: number;
+  maxHp: number;
+  active: boolean;
+  vulnerable: boolean;
+  flash: number;
 }
 
 export interface BossState {
@@ -87,6 +112,35 @@ export interface BossState {
   flash: number;
   timeRemaining: number;
   droneAngle: number;
+  phase: number;
+  weakPoints: BossWeakPoint[];
+}
+
+export interface GameplayWave extends Vec2 {
+  active: boolean;
+  id: number;
+  previousRadius: number;
+  radius: number;
+  maxRadius: number;
+  life: number;
+  maxLife: number;
+  damage: number;
+  depth: number;
+  source: DamageSource;
+  hitTargetIds: number[];
+}
+
+export interface BurstShard extends Vec2 {
+  active: boolean;
+  id: number;
+  previousX: number;
+  previousY: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  life: number;
+  penetration: number;
+  hitTargetIds: number[];
 }
 
 export interface Particle extends Vec2 {
@@ -108,6 +162,17 @@ export interface Shockwave extends Vec2 {
   maxLife: number;
   color: string;
   width: number;
+}
+
+export interface EffectLink {
+  active: boolean;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  life: number;
+  maxLife: number;
+  color: string;
 }
 
 export interface ImpactText extends Vec2 {
@@ -143,10 +208,31 @@ export interface PersistedState {
 export interface DebugSnapshot {
   fps: number;
   phase: GamePhase;
+  phaseTime: number;
+  elapsed: number;
   velocityX: number;
   velocityY: number;
+  playerX: number;
+  playerY: number;
+  bossPhase: number;
+  weakPointX: number;
+  weakPointY: number;
   targets: number;
+  enemies: number;
   particles: number;
+  shockwaves: number;
+  gameplayWaves: number;
+  burstShards: number;
   haloOrbiters: number;
+  haloTier: HaloTier;
+  burstCharge: number;
+  overdrive: number;
+  spawnIntensity: number;
+  runSeed: number;
+  peakTargets: number;
+  droppedSpawns: number;
+  comboCount: number;
+  largestCombo: number;
   comboTimer: number;
+  maximumMass: number;
 }

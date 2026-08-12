@@ -1,16 +1,19 @@
 import { COLORS, TUNING } from '../config';
 import { clamp } from '../math';
-import type { ImpactText, Particle, Shockwave } from '../types';
+import type { EffectLink, ExplosionTier, ImpactText, Particle, Shockwave } from '../types';
 
 export class EffectsSystem {
   public readonly particles: Particle[];
   public readonly shockwaves: Shockwave[];
+  public readonly links: EffectLink[];
   public readonly texts: ImpactText[];
   public shakeStrength = 0;
   public shakeTime = 0;
   public flash = 0;
   public hitStop = 0;
   private reducedMotion = false;
+  private quality = 1;
+  private particleCursor = 0;
 
   public constructor() {
     this.particles = Array.from({ length: TUNING.maxParticles }, () => ({
@@ -36,6 +39,16 @@ export class EffectsSystem {
       color: COLORS.ivory,
       width: 2,
     }));
+    this.links = Array.from({ length: TUNING.maxEffectLinks }, () => ({
+      active: false,
+      fromX: 0,
+      fromY: 0,
+      toX: 0,
+      toY: 0,
+      life: 0,
+      maxLife: 0,
+      color: COLORS.ivory,
+    }));
     this.texts = Array.from({ length: TUNING.maxImpactTexts }, () => ({
       active: false,
       x: 0,
@@ -50,6 +63,10 @@ export class EffectsSystem {
 
   public setReducedMotion(reduced: boolean): void {
     this.reducedMotion = reduced;
+  }
+
+  public setQuality(quality: number): void {
+    this.quality = clamp(quality, 0.45, 1);
   }
 
   public update(delta: number): void {
@@ -83,6 +100,12 @@ export class EffectsSystem {
       wave.radius = wave.maxRadius * (1 - (1 - progress) * (1 - progress));
     }
 
+    for (const link of this.links) {
+      if (!link.active) continue;
+      link.life -= delta;
+      if (link.life <= 0) link.active = false;
+    }
+
     for (const text of this.texts) {
       if (!text.active) continue;
       text.life -= delta;
@@ -99,9 +122,10 @@ export class EffectsSystem {
     speed = 180,
     direction?: number,
   ): void {
-    const boundedAmount = this.reducedMotion ? Math.ceil(amount * 0.38) : amount;
+    const motionScale = this.reducedMotion ? 0.38 : 1;
+    const boundedAmount = Math.max(1, Math.ceil(amount * motionScale * this.quality));
     for (let index = 0; index < boundedAmount; index += 1) {
-      const particle = this.particles.find((candidate) => !candidate.active);
+      const particle = this.nextInactiveParticle();
       if (!particle) break;
       const angle = direction === undefined
         ? Math.random() * Math.PI * 2
@@ -121,6 +145,34 @@ export class EffectsSystem {
         drag: 0.8 + Math.random() * 1.8,
       });
     }
+  }
+
+  public link(fromX: number, fromY: number, toX: number, toY: number, color: string = COLORS.amber): void {
+    const link = this.links.find((candidate) => !candidate.active);
+    if (!link) return;
+    const life = this.reducedMotion ? 0.09 : 0.16;
+    Object.assign(link, { active: true, fromX, fromY, toX, toY, life, maxLife: life, color });
+  }
+
+  public explosion(
+    x: number,
+    y: number,
+    tier: ExplosionTier,
+    color: string = COLORS.amber,
+    direction?: number,
+  ): void {
+    const settings = tier === 'catastrophe'
+      ? { particles: 42, speed: 430, radius: 154, width: 4, shake: 10, stop: 0.075 }
+      : tier === 'cascade'
+        ? { particles: 26, speed: 340, radius: 108, width: 3, shake: 6.5, stop: 0 }
+        : tier === 'burst'
+          ? { particles: 15, speed: 245, radius: 68, width: 2.4, shake: 3.5, stop: 0 }
+          : { particles: 7, speed: 175, radius: 38, width: 1.5, shake: 1.3, stop: 0 };
+    this.burst(x, y, settings.particles, color, settings.speed, direction);
+    this.ring(x, y, settings.radius, tier === 'catastrophe' ? COLORS.ivory : color, settings.width);
+    this.shake(settings.shake, tier === 'catastrophe' ? 0.36 : tier === 'cascade' ? 0.18 : 0.08);
+    if (settings.stop > 0) this.hitStop = Math.max(this.hitStop, settings.stop);
+    if (tier === 'catastrophe') this.flash = Math.max(this.flash, this.reducedMotion ? 0.12 : 0.28);
   }
 
   public ring(x: number, y: number, radius: number, color: string = COLORS.ivory, width = 2): void {
@@ -203,14 +255,28 @@ export class EffectsSystem {
   public clear(): void {
     for (const particle of this.particles) particle.active = false;
     for (const wave of this.shockwaves) wave.active = false;
+    for (const link of this.links) link.active = false;
     for (const text of this.texts) text.active = false;
     this.shakeStrength = 0;
     this.shakeTime = 0;
     this.flash = 0;
     this.hitStop = 0;
+    this.particleCursor = 0;
   }
 
   public clearLabels(): void {
     for (const text of this.texts) text.active = false;
+  }
+
+  private nextInactiveParticle(): Particle | null {
+    for (let offset = 0; offset < this.particles.length; offset += 1) {
+      const index = (this.particleCursor + offset) % this.particles.length;
+      const particle = this.particles[index];
+      if (!particle?.active) {
+        this.particleCursor = (index + 1) % this.particles.length;
+        return particle ?? null;
+      }
+    }
+    return null;
   }
 }

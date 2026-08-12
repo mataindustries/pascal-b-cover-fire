@@ -1,7 +1,7 @@
 import { UPGRADE_DEFINITIONS } from '../config';
 import { formatNumber } from '../math';
 import { upgradePrice } from '../logic/upgrades';
-import type { DebugSnapshot, GamePhase, Outcome, PersistedState, RunStats, UpgradeKey } from '../types';
+import type { DebugSnapshot, FormationKind, GamePhase, Outcome, PersistedState, RunStats, UpgradeKey } from '../types';
 
 export interface HudState {
   velocity: number;
@@ -9,13 +9,19 @@ export interface HudState {
   comboProgress: number;
   mass: number;
   massProgress: number;
+  haloTierLabel: string;
+  burstCharge: number;
+  burstReady: boolean;
+  burstMassReady: boolean;
+  overdrive: number;
+  overdriveHigh: boolean;
   heat: number;
   integrity: number;
   maxIntegrity: number;
   score: number;
   phaseLabel: string;
   bossProgress?: number;
-  bossTime?: number;
+  bossPhase?: number;
 }
 
 export interface UICallbacks {
@@ -30,6 +36,9 @@ export interface UICallbacks {
   resetProgress(): void;
   jumpToOrbit(): void;
   triggerBoss(): void;
+  coreBurst(): void;
+  spawnFormation(kind: FormationKind): void;
+  fillBurst(): void;
 }
 
 const queryRequired = <T extends Element>(parent: ParentNode, selector: string): T => {
@@ -50,10 +59,16 @@ export class UIController {
   private readonly announcer: HTMLElement;
   private readonly debugPanel: HTMLElement | null;
   private readonly upgradeList: HTMLElement;
+  private readonly burstButton: HTMLButtonElement;
+  private readonly statusLabel: HTMLElement;
+  private readonly bossMeter: HTMLElement;
+  private readonly elementCache = new Map<string, HTMLElement>();
+  private readonly listenerController = new AbortController();
   private readonly muteButtons: HTMLButtonElement[];
   private readonly volumeInputs: HTMLInputElement[];
   private resetArmed = false;
   private announceTimer = 0;
+  private announceFrame = 0;
 
   public constructor(
     app: HTMLElement,
@@ -72,6 +87,9 @@ export class UIController {
     this.announcer = queryRequired(app, '#announcer');
     this.debugPanel = app.querySelector('#debug-panel');
     this.upgradeList = queryRequired(app, '#upgrade-list');
+    this.burstButton = queryRequired(app, '#core-burst-button');
+    this.statusLabel = queryRequired(this.hud, '#condition-label');
+    this.bossMeter = queryRequired(this.hud, '#boss-meter');
     this.muteButtons = Array.from(app.querySelectorAll<HTMLButtonElement>('[data-action="mute"]'));
     this.volumeInputs = Array.from(app.querySelectorAll<HTMLInputElement>('[data-setting="volume"]'));
     this.bind(app);
@@ -83,6 +101,8 @@ export class UIController {
     this.hintScreen.classList.toggle('is-active', phase === 'hint');
     this.resultsScreen.classList.toggle('is-active', phase === 'results');
     this.hud.classList.toggle('is-visible', ['launch', 'ascent', 'orbit', 'boss'].includes(phase));
+    this.burstButton.classList.toggle('is-visible', phase === 'orbit' || phase === 'boss');
+    if (phase !== 'orbit' && phase !== 'boss') document.body.classList.remove('overdrive-high');
     document.body.dataset.phase = phase;
   }
 
@@ -94,21 +114,35 @@ export class UIController {
     this.setText('#hud-velocity', `${state.velocity.toFixed(1)} km/s`);
     this.setText('#hud-combo', state.combo > 1 ? `x${state.combo}` : '—');
     this.setText('#hud-mass', `${state.mass.toFixed(1)} t`);
+    this.setText('#hud-halo-tier', state.haloTierLabel);
     this.setText('#hud-score', formatNumber(state.score));
     this.setText('#phase-label', state.phaseLabel);
     this.setBar('#combo-bar', state.comboProgress);
     this.setBar('#mass-bar', state.massProgress);
     this.setBar('#heat-bar', state.heat);
     this.setBar('#integrity-bar', state.integrity / Math.max(1, state.maxIntegrity));
-    const statusLabel = queryRequired<HTMLElement>(this.hud, '#condition-label');
-    statusLabel.textContent = state.heat > 0.82 ? 'THERMAL' : state.integrity < state.maxIntegrity * 0.35 ? 'INTEGRITY' : 'NOMINAL';
-    statusLabel.classList.toggle('is-danger', state.heat > 0.82 || state.integrity < state.maxIntegrity * 0.35);
+    this.setBar('#overdrive-meter', state.overdrive);
+    this.setBar('#overdrive-bar', state.overdrive);
+    this.setBar('#burst-charge-bar', state.burstCharge);
+    this.burstButton.disabled = !state.burstReady;
+    this.burstButton.dataset.ready = String(state.burstReady);
+    this.burstButton.setAttribute('aria-label', state.burstReady
+      ? 'Core Burst ready. Discharge captured wreckage.'
+      : !state.burstMassReady && state.burstCharge >= 1
+        ? 'Core Burst charged. Capture 15 tonnes of halo mass to enable it.'
+        : `Core Burst charging, ${Math.round(state.burstCharge * 100)} percent.`);
+    this.setText(
+      '#burst-state',
+      state.burstReady ? 'READY' : !state.burstMassReady && state.burstCharge >= 1 ? 'NEED 15t' : `${Math.round(state.burstCharge * 100)}%`,
+    );
+    document.body.classList.toggle('overdrive-high', state.overdriveHigh);
+    this.statusLabel.textContent = state.heat > 0.82 ? 'THERMAL' : state.integrity < state.maxIntegrity * 0.35 ? 'INTEGRITY' : 'NOMINAL';
+    this.statusLabel.classList.toggle('is-danger', state.heat > 0.82 || state.integrity < state.maxIntegrity * 0.35);
 
-    const bossMeter = queryRequired<HTMLElement>(this.hud, '#boss-meter');
-    bossMeter.classList.toggle('is-visible', state.bossProgress !== undefined);
+    this.bossMeter.classList.toggle('is-visible', state.bossProgress !== undefined);
     if (state.bossProgress !== undefined) {
       this.setBar('#boss-bar', state.bossProgress);
-      this.setText('#boss-time', `${Math.max(0, Math.ceil(state.bossTime ?? 0))}s`);
+      this.setText('#boss-phase', `${Math.min(3, (state.bossPhase ?? 0) + 1)} / 3`);
     }
   }
 
@@ -125,7 +159,7 @@ export class UIController {
     this.setText('#result-mass', `${stats.wreckageMass.toFixed(1)} t`);
     this.setText('#result-score', formatNumber(stats.totalScore));
     this.setText('#result-scrap', `+${formatNumber(stats.scrapEarned)}`);
-    this.setText('#result-mothership', stats.mothershipDestroyed ? 'DESTROYED' : 'ESCAPED');
+    this.setText('#result-mothership', stats.mothershipDestroyed ? 'DESTROYED' : 'NOT DESTROYED');
     this.setText('#result-best', `BEST ${formatNumber(persisted.bestScore)}`);
     this.updateUpgradePanel(persisted);
   }
@@ -170,10 +204,11 @@ export class UIController {
 
   public announce(text: string, tone: 'neutral' | 'warning' | 'victory' = 'neutral'): void {
     window.clearTimeout(this.announceTimer);
+    cancelAnimationFrame(this.announceFrame);
     this.announcer.textContent = text;
     this.announcer.dataset.tone = tone;
     this.announcer.classList.remove('is-active');
-    requestAnimationFrame(() => this.announcer.classList.add('is-active'));
+    this.announceFrame = requestAnimationFrame(() => this.announcer.classList.add('is-active'));
     this.announceTimer = window.setTimeout(() => this.announcer.classList.remove('is-active'), 1600);
   }
 
@@ -183,11 +218,23 @@ export class UIController {
     readout.textContent = [
       `FPS ${snapshot.fps.toFixed(0)}`,
       `STATE ${snapshot.phase.toUpperCase()}`,
+      `TIME ${snapshot.phaseTime.toFixed(1)} / RUN ${snapshot.elapsed.toFixed(1)}`,
       `VEC ${snapshot.velocityX.toFixed(0)}, ${snapshot.velocityY.toFixed(0)}`,
+      `POS ${snapshot.playerX.toFixed(0)}, ${snapshot.playerY.toFixed(0)} / BOSS ${snapshot.bossPhase}`,
       `OBJECTS ${snapshot.targets}`,
+      `ENEMIES ${snapshot.enemies}`,
       `PARTICLES ${snapshot.particles}`,
-      `HALO ${snapshot.haloOrbiters}`,
-      `COMBO T ${snapshot.comboTimer.toFixed(2)}`,
+      `FX WAVES ${snapshot.shockwaves}`,
+      `GAME WAVES ${snapshot.gameplayWaves}`,
+      `SHARDS ${snapshot.burstShards}`,
+      `HALO ${snapshot.haloOrbiters} / T${snapshot.haloTier}`,
+      `MASS CAP ${snapshot.maximumMass.toFixed(0)}t`,
+      `BURST ${(snapshot.burstCharge * 100).toFixed(0)}%`,
+      `OVERDRIVE ${(snapshot.overdrive * 100).toFixed(0)}%`,
+      `SPAWN ${snapshot.spawnIntensity.toFixed(2)}`,
+      `PEAK ${snapshot.peakTargets} / DROP ${snapshot.droppedSpawns}`,
+      `SEED ${snapshot.runSeed}`,
+      `COMBO ${snapshot.comboCount} / PEAK ${snapshot.largestCombo} / ${snapshot.comboTimer.toFixed(2)}s`,
     ].join('\n');
   }
 
@@ -196,44 +243,65 @@ export class UIController {
     if (!open) this.resetArmed = false;
   }
 
+  public destroy(): void {
+    window.clearTimeout(this.announceTimer);
+    cancelAnimationFrame(this.announceFrame);
+    this.listenerController.abort();
+    document.body.classList.remove('overdrive-high');
+  }
+
   private setText(selector: string, text: string): void {
-    const element = document.querySelector<HTMLElement>(selector);
+    const element = this.cachedElement(selector);
     if (element) element.textContent = text;
   }
 
   private setBar(selector: string, progress: number): void {
-    const element = document.querySelector<HTMLElement>(selector);
+    const element = this.cachedElement(selector);
     if (element) element.style.setProperty('--progress', String(Math.max(0, Math.min(1, progress))));
   }
 
+  private cachedElement(selector: string): HTMLElement | null {
+    const cached = this.elementCache.get(selector);
+    if (cached) return cached;
+    const element = document.querySelector<HTMLElement>(selector);
+    if (element) this.elementCache.set(selector, element);
+    return element;
+  }
+
   private bind(app: HTMLElement): void {
-    queryRequired<HTMLButtonElement>(app, '#start-button').addEventListener('click', this.callbacks.start);
-    queryRequired<HTMLButtonElement>(app, '#arm-button').addEventListener('click', this.callbacks.armTest);
-    queryRequired<HTMLButtonElement>(app, '#replay-button').addEventListener('click', this.callbacks.replay);
-    queryRequired<HTMLButtonElement>(app, '#pause-button').addEventListener('click', this.callbacks.pause);
-    queryRequired<HTMLButtonElement>(app, '#resume-button').addEventListener('click', this.callbacks.resume);
+    const options = { signal: this.listenerController.signal };
+    queryRequired<HTMLButtonElement>(app, '#start-button').addEventListener('click', this.callbacks.start, options);
+    queryRequired<HTMLButtonElement>(app, '#arm-button').addEventListener('click', this.callbacks.armTest, options);
+    queryRequired<HTMLButtonElement>(app, '#replay-button').addEventListener('click', this.callbacks.replay, options);
+    queryRequired<HTMLButtonElement>(app, '#pause-button').addEventListener('click', this.callbacks.pause, options);
+    queryRequired<HTMLButtonElement>(app, '#resume-button').addEventListener('click', this.callbacks.resume, options);
+    this.burstButton.addEventListener('click', this.callbacks.coreBurst, options);
     if (this.debugPanel) {
-      queryRequired<HTMLButtonElement>(app, '#debug-orbit').addEventListener('click', this.callbacks.jumpToOrbit);
-      queryRequired<HTMLButtonElement>(app, '#debug-boss').addEventListener('click', this.callbacks.triggerBoss);
+      queryRequired<HTMLButtonElement>(app, '#debug-orbit').addEventListener('click', this.callbacks.jumpToOrbit, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-boss').addEventListener('click', this.callbacks.triggerBoss, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-swarm').addEventListener('click', () => this.callbacks.spawnFormation('wedge'), options);
+      queryRequired<HTMLButtonElement>(app, '#debug-mines').addEventListener('click', () => this.callbacks.spawnFormation('minefield'), options);
+      queryRequired<HTMLButtonElement>(app, '#debug-splitters').addEventListener('click', () => this.callbacks.spawnFormation('splitter'), options);
+      queryRequired<HTMLButtonElement>(app, '#debug-fill-burst').addEventListener('click', this.callbacks.fillBurst, options);
     }
 
     app.querySelectorAll<HTMLButtonElement>('[data-action="settings-open"]').forEach((button) => {
-      button.addEventListener('click', () => this.openSettings(true));
+      button.addEventListener('click', () => this.openSettings(true), options);
     });
-    queryRequired<HTMLButtonElement>(app, '#settings-close').addEventListener('click', () => this.openSettings(false));
+    queryRequired<HTMLButtonElement>(app, '#settings-close').addEventListener('click', () => this.openSettings(false), options);
 
     for (const button of this.muteButtons) {
-      button.addEventListener('click', () => this.callbacks.setMuted(button.dataset.muted !== 'true'));
+      button.addEventListener('click', () => this.callbacks.setMuted(button.dataset.muted !== 'true'), options);
     }
     for (const input of this.volumeInputs) {
-      input.addEventListener('input', () => this.callbacks.setVolume(Number(input.value) / 100));
+      input.addEventListener('input', () => this.callbacks.setVolume(Number(input.value) / 100), options);
     }
 
     this.upgradeList.addEventListener('click', (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-upgrade]');
       if (!button || button.disabled) return;
       this.callbacks.purchaseUpgrade(button.dataset.upgrade as UpgradeKey);
-    });
+    }, options);
 
     queryRequired<HTMLButtonElement>(app, '#reset-progress').addEventListener('click', (event) => {
       const button = event.currentTarget as HTMLButtonElement;
@@ -245,7 +313,7 @@ export class UIController {
       this.callbacks.resetProgress();
       button.textContent = 'RESET ALL PROGRESS';
       this.resetArmed = false;
-    });
+    }, options);
   }
 
   private template(debugEnabled: boolean): string {
@@ -263,7 +331,7 @@ export class UIController {
             </div>
             <div class="hud-row hud-secondary">
               <div class="micro-stat combo-stat"><span>CHAIN <b id="hud-combo">—</b></span><i id="combo-bar" class="micro-bar"></i></div>
-              <div class="micro-stat"><span>HALO <b id="hud-mass">0.0 t</b></span><i id="mass-bar" class="micro-bar"></i></div>
+              <div class="micro-stat"><span><em id="hud-halo-tier">NO HALO</em> <b id="hud-mass">0.0 t</b></span><i id="mass-bar" class="micro-bar"></i></div>
               <div class="condition-block">
                 <span id="condition-label">NOMINAL</span>
                 <i id="integrity-bar" class="micro-bar integrity"></i>
@@ -271,10 +339,15 @@ export class UIController {
               </div>
             </div>
             <div id="boss-meter" class="boss-meter">
-              <span>INTERCEPT <b id="boss-time">29s</b></span><i id="boss-bar" class="micro-bar"></i>
+              <span>MOTHERSHIP BREACH <b id="boss-phase">1 / 3</b></span><i id="boss-bar" class="micro-bar"></i>
             </div>
             <div id="phase-label" class="phase-label">TEST SHAFT / ARMED</div>
           </header>
+
+          <div id="overdrive-meter" class="overdrive-meter" aria-label="Overdrive intensity"><i id="overdrive-bar"></i></div>
+          <button id="core-burst-button" class="core-burst-button" type="button" disabled>
+            <small>HALO DISCHARGE</small><strong>CORE BURST</strong><span id="burst-state">0%</span><i id="burst-charge-bar"></i>
+          </button>
 
           <div id="announcer" class="announcer" role="status"></div>
 
@@ -312,9 +385,10 @@ export class UIController {
               <ol>
                 <li><b>DRAG</b><span>Set the launch angle</span></li>
                 <li><b>HOLD + RELEASE</b><span>Charge the shaft</span></li>
-                <li><b>DRAG IN FLIGHT</b><span>Bend the trajectory</span></li>
+                <li><b>DRAG IN FLIGHT</b><span>Bend the momentum vector</span></li>
+                <li><b>CORE BURST</b><span>Spend halo mass to start cascades</span></li>
               </ol>
-              <p class="keyboard-hint">KEYBOARD: A/D OR ←/→ · HOLD SPACE · P TO PAUSE</p>
+              <p class="keyboard-hint">KEYBOARD: WASD / ARROWS · SPACE CHARGE / BURST · P PAUSE</p>
               <button id="arm-button" class="primary-button">ARM TEST SHAFT <span>→</span></button>
             </div>
           </section>
@@ -331,7 +405,7 @@ export class UIController {
                 <div><small>WRECKAGE MASS</small><strong id="result-mass">0.0 t</strong></div>
                 <div class="result-score"><small>TOTAL SCORE</small><strong id="result-score">0</strong><em id="result-best">BEST 0</em></div>
                 <div><small>SCRAP RECOVERED</small><strong id="result-scrap">+0</strong></div>
-                <div class="result-wide"><small>MOTHERSHIP</small><strong id="result-mothership">ESCAPED</strong></div>
+                <div class="result-wide"><small>MOTHERSHIP</small><strong id="result-mothership">NOT DESTROYED</strong></div>
               </div>
               <div class="upgrade-header"><div><small>FIELD MODIFICATIONS</small><strong id="scrap-balance">0 SCRAP</strong></div><span id="upgrade-message" role="status"></span></div>
               <div id="upgrade-list" class="upgrade-list"></div>
@@ -361,7 +435,9 @@ export class UIController {
           ${debugEnabled ? `
             <section id="debug-panel" class="debug-panel is-visible" aria-label="Developer debug controls">
               <pre id="debug-readout">DEBUG INITIALIZING</pre>
-              <div><button id="debug-orbit">JUMP ORBIT</button><button id="debug-boss">TRIGGER BOSS</button></div>
+              <div><button id="debug-orbit">ARENA</button><button id="debug-boss">BOSS</button></div>
+              <div><button id="debug-swarm">SWARM</button><button id="debug-mines">MINES</button><button id="debug-splitters">SPLIT</button></div>
+              <div><button id="debug-fill-burst">FILL BURST</button></div>
             </section>` : ''}
         </section>
         <aside class="desktop-placard" aria-hidden="true"><span>PROJECT 57-B</span><b>ORBITAL INCIDENT CONSOLE</b><small>AUTHORIZED PERSONNEL ONLY</small></aside>

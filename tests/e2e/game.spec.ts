@@ -34,8 +34,24 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
 
   await page.locator('#debug-orbit').click();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'orbit');
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(900);
   await page.screenshot({ path: testInfo.outputPath('orbit-mobile.png'), fullPage: true });
+  const openingSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(openingSnapshot?.largestCombo).toBeGreaterThanOrEqual(5);
+  expect(openingSnapshot?.targets).toBeLessThanOrEqual(50);
+
+  await page.locator('#debug-mines').click();
+  await page.locator('#debug-fill-burst').click();
+  const beforeBurst = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  await expect(page.locator('#core-burst-button')).toBeEnabled();
+  await page.locator('#core-burst-button').click();
+  await page.waitForTimeout(90);
+  const afterBurst = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(afterBurst?.mass).toBeLessThan(beforeBurst?.mass ?? 0);
+  expect(afterBurst?.peakMass).toBeGreaterThanOrEqual(beforeBurst?.mass ?? 0);
+  expect(afterBurst?.burstCharge).toBeLessThan(0.01);
+  expect((afterBurst?.burstShards ?? 0) + (afterBurst?.gameplayWaves ?? 0)).toBeGreaterThan(0);
+  await page.screenshot({ path: testInfo.outputPath('core-burst-mobile.png'), fullPage: true });
 
   await page.locator('#pause-button').click();
   await expect(page.locator('#pause-screen')).toHaveClass(/is-active/);
@@ -46,10 +62,10 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
 
   await page.locator('#debug-boss').click();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'boss');
-  await page.waitForTimeout(2_600);
+  await page.waitForTimeout(1_900);
   await page.screenshot({ path: testInfo.outputPath('boss-mobile.png'), fullPage: true });
   await page.evaluate(() => {
-    for (let hit = 0; hit < 8; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
+    for (let hit = 0; hit < 18; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
   });
   await page.waitForTimeout(80);
   await page.screenshot({ path: testInfo.outputPath('mothership-destruction-mobile.png'), fullPage: true });
@@ -66,6 +82,7 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
     return raw ? (JSON.parse(raw) as { upgrades: { launchPressure: number } }).upgrades.launchPressure : -1;
   });
   expect(savedLevel).toBe(1);
+  const firstRunSeed = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot().runSeed);
 
   await page.locator('#replay-button').click();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'launch');
@@ -78,13 +95,19 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   await page.locator('#debug-orbit').click();
   await page.locator('#debug-boss').click();
   await page.evaluate(() => {
-    for (let hit = 0; hit < 8; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
+    for (let hit = 0; hit < 18; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
   });
   await expect(page.locator('#results-screen')).toHaveClass(/is-active/, { timeout: 8_000 });
   const secondRunPools = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
-  expect(secondRunPools?.targets).toBeLessThanOrEqual(30);
-  expect(secondRunPools?.particles).toBeLessThanOrEqual(120);
-  expect(secondRunPools?.haloOrbiters).toBeLessThanOrEqual(28);
+  expect(secondRunPools?.targets).toBeLessThanOrEqual(50);
+  expect(secondRunPools?.enemies).toBeLessThanOrEqual(50);
+  expect(secondRunPools?.particles).toBeLessThanOrEqual(220);
+  expect(secondRunPools?.haloOrbiters).toBeLessThanOrEqual(36);
+  expect(secondRunPools?.shockwaves).toBeLessThanOrEqual(12);
+  expect(secondRunPools?.gameplayWaves).toBeLessThanOrEqual(12);
+  expect(secondRunPools?.burstShards).toBeLessThanOrEqual(28);
+  expect(secondRunPools?.peakTargets).toBeLessThanOrEqual(50);
+  expect(secondRunPools?.runSeed).not.toBe(firstRunSeed);
 
   const documentMetrics = await page.evaluate(() => ({
     scrollY: window.scrollY,
@@ -98,14 +121,50 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   expect(consoleErrors).toEqual([]);
 });
 
-test('normal play omits visible debug tooling', async ({ page }) => {
+test('normal play omits visible debug tooling', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
   await page.goto('/');
   await expect(page.locator('#title-screen')).toHaveClass(/is-active/);
   await expect(page.locator('#debug-panel')).toBeHidden();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'title');
+  const metrics = await page.evaluate(() => ({
+    width: document.documentElement.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  expect(metrics.width).toBeLessThanOrEqual(metrics.viewport);
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: testInfo.outputPath('title-360-normal.png'), fullPage: true });
+  await page.locator('#start-button').click();
+  await expect(page.locator('#hint-screen')).toHaveClass(/is-active/);
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: testInfo.outputPath('hint-360-normal.png'), fullPage: true });
+});
+
+test('short portrait reserves a touch-safe zone for Core Burst', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.goto('/?debug=1');
+  await page.waitForTimeout(1_050);
+  await page.locator('#start-button').click();
+  await page.locator('#arm-button').click();
+  await page.locator('#debug-orbit').click();
+  await page.waitForTimeout(1_000);
+  const geometry = await page.evaluate(() => ({
+    playerY: window.__PASCAL_B_DEBUG__?.snapshot().playerY ?? 0,
+    burstTop: document.querySelector('#core-burst-button')?.getBoundingClientRect().top ?? 0,
+    canvas: document.querySelector('#game-canvas')?.getBoundingClientRect(),
+  }));
+  expect(geometry.canvas).not.toBeNull();
+  if (!geometry.canvas) return;
+  const scale = geometry.canvas.width / 450;
+  const logicalHeight = Math.min(1_000, Math.max(800, 450 * geometry.canvas.height / geometry.canvas.width));
+  const verticalOffset = (logicalHeight - 800) * 0.5;
+  const maximumHaloBottom = geometry.canvas.top + (geometry.playerY + verticalOffset + 78) * scale;
+  expect(maximumHaloBottom).toBeLessThan(geometry.burstTop);
 });
 
 test('natural phase timers carry a charged launch into orbit and the interception', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.clock.install();
   await page.goto('/?debug=1');
   await page.clock.runFor(1_100);
@@ -122,24 +181,76 @@ test('natural phase timers carry a charged launch into orbit and the interceptio
   await page.mouse.up();
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'ascent');
 
-  await page.clock.runFor(16_000);
+  await page.clock.runFor(3_500);
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'orbit');
 
-  let reachedBoss = false;
-  for (let second = 0; second < 40; second += 1) {
-    await page.clock.runFor(1_000);
-    const phase = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot().phase);
-    if (phase === 'boss') {
-      reachedBoss = true;
-      break;
-    }
-  }
-  expect(reachedBoss).toBe(true);
+  await page.clock.runFor(20_000);
+  const twentySecondSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(twentySecondSnapshot?.phase).toBe('orbit');
+  expect(twentySecondSnapshot?.burstCharge).toBeGreaterThanOrEqual(0.65);
+  expect(twentySecondSnapshot?.largestCombo).toBeGreaterThanOrEqual(5);
+  expect(twentySecondSnapshot?.peakTargets).toBeLessThanOrEqual(50);
+
+  await page.clock.runFor(5_000);
+  const twentyFiveSecondSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(twentyFiveSecondSnapshot?.burstCharge).toBe(1);
+  expect(twentyFiveSecondSnapshot?.mass).toBeGreaterThanOrEqual(15);
+
+  await page.clock.runFor(35_500);
+  await expect(page.locator('body')).toHaveAttribute('data-phase', 'boss');
+  const bossArrival = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(bossArrival?.elapsed).toBeGreaterThanOrEqual(63);
+  expect(bossArrival?.elapsed).toBeLessThan(67);
 
   await page.evaluate(() => {
-    for (let hit = 0; hit < 8; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
+    for (let hit = 0; hit < 18; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
   });
   await page.clock.runFor(3_500);
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'results');
   await expect(page.locator('#result-mothership')).toHaveText('DESTROYED');
+});
+
+test('steering and live cascades can breach the mothership without injected damage', async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.clock.install();
+  await page.goto('/?debug=1');
+  await page.clock.runFor(1_100);
+  await page.locator('#start-button').click();
+  await page.locator('#arm-button').click();
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.triggerBoss());
+  await page.clock.runFor(1_900);
+  const bossStartElapsed = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot().elapsed ?? 0);
+
+  const canvas = page.locator('#game-canvas');
+  const bounds = await canvas.boundingBox();
+  if (!bounds) throw new Error('Canvas has no interactive bounds.');
+  let usedBurst = false;
+
+  for (let step = 0; step < 72; step += 1) {
+    const snapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+    if (!snapshot || snapshot.phase === 'results') break;
+    if (snapshot.burstCharge >= 1) {
+      await page.locator('#core-burst-button').click();
+      usedBurst = true;
+    }
+    const dx = snapshot.weakPointX - snapshot.playerX;
+    const dy = snapshot.weakPointY - snapshot.playerY;
+    const length = Math.hypot(dx, dy) || 1;
+    const startX = bounds.x + bounds.width * 0.5;
+    const startY = bounds.y + bounds.height * 0.56;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + dx / length * 78, startY + dy / length * 78, { steps: 2 });
+    await page.clock.runFor(420);
+    await page.mouse.up();
+    await page.clock.runFor(80);
+  }
+
+  await expect(page.locator('#results-screen')).toHaveClass(/is-active/);
+  await expect(page.locator('#result-mothership')).toHaveText('DESTROYED');
+  expect(usedBurst).toBe(true);
+  const finalSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  const activeBossSeconds = (finalSnapshot?.elapsed ?? 0) - bossStartElapsed;
+  expect(activeBossSeconds).toBeGreaterThanOrEqual(12);
+  expect(activeBossSeconds).toBeLessThanOrEqual(26);
 });

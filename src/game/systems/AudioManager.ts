@@ -1,6 +1,7 @@
 import { clamp } from '../math';
 
 type AudioContextConstructor = typeof AudioContext;
+type AudioFamily = 'general' | 'impact' | 'chain' | 'mine' | 'burst';
 
 export class AudioManager {
   private context: AudioContext | null = null;
@@ -10,6 +11,17 @@ export class AudioManager {
   private chargeGain: GainNode | null = null;
   private ascentOscillator: OscillatorNode | null = null;
   private ascentGain: GainNode | null = null;
+  private overdriveOscillator: OscillatorNode | null = null;
+  private overdriveGain: GainNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  private readonly activeVoices: Record<AudioFamily, number> = {
+    general: 0,
+    impact: 0,
+    chain: 0,
+    mine: 0,
+    burst: 0,
+  };
+  private lastChainTickTime = -1;
   private muted: boolean;
   private volume: number;
 
@@ -39,6 +51,24 @@ export class AudioManager {
   public setMuted(muted: boolean): void {
     this.muted = muted;
     this.applyVolume();
+  }
+
+  public destroy(): void {
+    this.stopCharge(false);
+    this.stopAscent();
+    if (this.context && this.overdriveGain && this.overdriveOscillator) {
+      const now = this.context.currentTime;
+      this.overdriveGain.gain.setTargetAtTime(0.0001, now, 0.01);
+      this.overdriveOscillator.stop(now + 0.04);
+    }
+    this.overdriveOscillator = null;
+    this.overdriveGain = null;
+    void this.context?.close();
+    this.context = null;
+    this.master = null;
+    this.noiseBuffer = null;
+    for (const family of Object.keys(this.activeVoices) as AudioFamily[]) this.activeVoices[family] = 0;
+    this.lastChainTickTime = -1;
   }
 
   public startCharge(): void {
@@ -133,11 +163,69 @@ export class AudioManager {
     const frequency = tier === 3 ? 62 : tier === 2 ? 105 : 210;
     const duration = tier === 3 ? 0.32 : tier === 2 ? 0.18 : 0.09;
     const gain = tier === 3 ? 0.22 : tier === 2 ? 0.14 : 0.07;
-    this.tone(frequency, duration, tier === 1 ? 'triangle' : 'square', gain, frequency * 0.55);
+    this.tone(frequency, duration, tier === 1 ? 'triangle' : 'square', gain, frequency * 0.55, 0, 'impact');
     if (tier > 1) {
-      this.noiseBurst(duration * 0.75, gain * 0.75, tier === 3 ? 90 : 260);
-      this.tone(frequency * 2.25, duration * 0.55, 'triangle', gain * 0.38, frequency * 0.8, 0.008);
+      this.noiseBurst(duration * 0.75, gain * 0.75, tier === 3 ? 90 : 260, 0, 'impact');
+      this.tone(frequency * 2.25, duration * 0.55, 'triangle', gain * 0.38, frequency * 0.8, 0.008, 'impact');
     }
+  }
+
+  public chainTick(combo: number, volatile: boolean): void {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    if (this.lastChainTickTime >= 0 && now - this.lastChainTickTime < 0.024) return;
+    this.lastChainTickTime = now;
+    const step = Math.min(18, Math.max(0, combo - 1));
+    const frequency = 220 * 2 ** (step / 12);
+    this.tone(frequency, volatile ? 0.11 : 0.065, 'triangle', volatile ? 0.055 : 0.032, frequency * 1.16, 0, 'chain');
+  }
+
+  public chainMilestone(combo: number): void {
+    const root = combo >= 50 ? 110 : combo >= 30 ? 138 : combo >= 15 ? 165 : 196;
+    [1, 1.5, 2].forEach((ratio, index) => {
+      this.tone(root * ratio, 0.2, index === 0 ? 'square' : 'triangle', 0.055, root * ratio * 1.08, index * 0.045, 'chain');
+    });
+  }
+
+  public minePrime(): void {
+    this.tone(310, 0.14, 'square', 0.038, 620, 0, 'mine');
+  }
+
+  public mineDetonate(): void {
+    this.tone(72, 0.3, 'square', 0.12, 38, 0, 'mine');
+    this.noiseBurst(0.22, 0.09, 180, 0, 'mine');
+  }
+
+  public capture(tier: number): void {
+    const frequency = 460 + Math.min(4, tier) * 58;
+    this.tone(frequency, 0.085, 'triangle', 0.032, frequency * 1.42, 0, 'chain');
+  }
+
+  public coreBurst(): void {
+    this.tone(48, 0.62, 'sawtooth', 0.22, 24, 0, 'burst');
+    this.tone(820, 0.18, 'square', 0.08, 190, 0.015, 'burst');
+    this.noiseBurst(0.58, 0.2, 1_100, 0.02, 'burst');
+    [220, 330, 495].forEach((frequency, index) => {
+      this.tone(frequency, 0.32, 'triangle', 0.055, frequency * 1.35, 0.11 + index * 0.045, 'burst');
+    });
+  }
+
+  public updateOverdrive(value: number, high: boolean): void {
+    if (!this.context || !this.master) return;
+    if (!this.overdriveOscillator || !this.overdriveGain) {
+      const oscillator = this.context.createOscillator();
+      const gain = this.context.createGain();
+      oscillator.type = 'sawtooth';
+      oscillator.frequency.value = 46;
+      gain.gain.value = 0.0001;
+      oscillator.connect(gain).connect(this.master);
+      oscillator.start();
+      this.overdriveOscillator = oscillator;
+      this.overdriveGain = gain;
+    }
+    const now = this.context.currentTime;
+    this.overdriveOscillator.frequency.setTargetAtTime(46 + value * (high ? 92 : 54), now, 0.08);
+    this.overdriveGain.gain.setTargetAtTime(value > 0.08 ? 0.004 + value * (high ? 0.025 : 0.014) : 0.0001, now, 0.1);
   }
 
   public haloThreshold(tier: number): void {
@@ -194,8 +282,10 @@ export class AudioManager {
     gainAmount: number,
     endFrequency: number,
     delay = 0,
+    family: AudioFamily = 'general',
   ): void {
     if (!this.context || !this.master || this.muted) return;
+    if (!this.claimVoice(family)) return;
     const now = this.context.currentTime + delay;
     const oscillator = this.context.createOscillator();
     const gain = this.context.createGain();
@@ -208,25 +298,53 @@ export class AudioManager {
     oscillator.connect(gain).connect(this.master);
     oscillator.start(now);
     oscillator.stop(now + duration + 0.01);
+    oscillator.addEventListener('ended', () => this.releaseVoice(family), { once: true });
   }
 
-  private noiseBurst(duration: number, gainAmount: number, lowpass: number, delay = 0): void {
+  private noiseBurst(
+    duration: number,
+    gainAmount: number,
+    lowpass: number,
+    delay = 0,
+    family: AudioFamily = 'general',
+  ): void {
     if (!this.context || !this.master || this.muted) return;
-    const sampleCount = Math.max(1, Math.floor(this.context.sampleRate * duration));
-    const buffer = this.context.createBuffer(1, sampleCount, this.context.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let index = 0; index < data.length; index += 1) {
-      const envelope = 1 - index / data.length;
-      data[index] = (Math.random() * 2 - 1) * envelope;
-    }
+    if (!this.claimVoice(family)) return;
+    const buffer = this.ensureNoiseBuffer();
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     filter.type = 'lowpass';
     filter.frequency.value = lowpass;
-    gain.gain.value = gainAmount;
+    const startTime = this.context.currentTime + delay;
+    gain.gain.setValueAtTime(Math.max(0.0001, gainAmount), startTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + Math.min(duration, buffer.duration));
     source.buffer = buffer;
     source.connect(filter).connect(gain).connect(this.master);
-    source.start(this.context.currentTime + delay);
+    source.start(startTime, 0, Math.min(duration, buffer.duration));
+    source.addEventListener('ended', () => this.releaseVoice(family), { once: true });
+  }
+
+  private ensureNoiseBuffer(): AudioBuffer {
+    if (!this.context) throw new Error('Audio context is unavailable.');
+    if (this.noiseBuffer) return this.noiseBuffer;
+    const sampleCount = Math.max(1, Math.floor(this.context.sampleRate * 0.9));
+    const buffer = this.context.createBuffer(1, sampleCount, this.context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < data.length; index += 1) {
+      data[index] = Math.random() * 2 - 1;
+    }
+    this.noiseBuffer = buffer;
+    return buffer;
+  }
+
+  private claimVoice(family: AudioFamily): boolean {
+    if (this.activeVoices[family] >= 8) return false;
+    this.activeVoices[family] += 1;
+    return true;
+  }
+
+  private releaseVoice(family: AudioFamily): void {
+    this.activeVoices[family] = Math.max(0, this.activeVoices[family] - 1);
   }
 }

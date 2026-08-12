@@ -1,41 +1,332 @@
 import { STAGE, TUNING } from '../config';
-import { seededNoise } from '../math';
-import type { FlightPhase, GravityWell, TargetKind, WorldTarget } from '../types';
+import { clamp, seededNoise } from '../math';
+import type { FlightPhase, FormationKind, GravityWell, PlayerState, TargetKind, WorldTarget } from '../types';
 
 interface TargetProfile {
   radius: number;
   hp: number;
   mass: number;
   score: number;
+  contactDamage: number;
 }
 
 const PROFILES: Record<TargetKind, TargetProfile> = {
-  balloon: { radius: 19, hp: 1, mass: 0.7, score: 120 },
-  instrument: { radius: 12, hp: 1, mass: 0.9, score: 160 },
-  aircraft: { radius: 25, hp: 1, mass: 1.4, score: 260 },
-  satellite: { radius: 18, hp: 1, mass: 1.8, score: 310 },
-  solar: { radius: 25, hp: 1, mass: 2.1, score: 380 },
-  tank: { radius: 23, hp: 2, mass: 3.2, score: 580 },
-  antenna: { radius: 17, hp: 1, mass: 1.6, score: 290 },
-  asteroid: { radius: 23, hp: 2, mass: 3.8, score: 620 },
-  debris: { radius: 9, hp: 1, mass: 0.55, score: 90 },
-  drone: { radius: 14, hp: 1, mass: 1.5, score: 420 },
+  balloon: { radius: 18, hp: 1, mass: 0.7, score: 120, contactDamage: 0 },
+  instrument: { radius: 12, hp: 1, mass: 0.9, score: 160, contactDamage: 0 },
+  aircraft: { radius: 24, hp: 1, mass: 1.4, score: 260, contactDamage: 0 },
+  satellite: { radius: 18, hp: 1, mass: 1.7, score: 280, contactDamage: 0.4 },
+  solar: { radius: 24, hp: 1, mass: 2, score: 350, contactDamage: 0.5 },
+  debris: { radius: 9, hp: 1, mass: 0.5, score: 90, contactDamage: 0.2 },
+  swarmer: { radius: 11, hp: 1, mass: 0.65, score: 230, contactDamage: 1.1 },
+  mine: { radius: 17, hp: 1, mass: 1.15, score: 440, contactDamage: 3.2 },
+  splitter: { radius: 22, hp: 2, mass: 2.8, score: 620, contactDamage: 3.2 },
+  splitterFragment: { radius: 8, hp: 1, mass: 0.42, score: 175, contactDamage: 0.8 },
 };
 
-const orbitKinds: TargetKind[] = ['satellite', 'solar', 'tank', 'antenna', 'asteroid', 'debris'];
+const isEnemyKind = (kind: TargetKind): boolean =>
+  kind === 'swarmer' || kind === 'mine' || kind === 'splitter' || kind === 'splitterFragment';
 
 export class WorldSystem {
   public readonly targets: WorldTarget[];
   public readonly gravityWells: GravityWell[] = [];
+  public spawnIntensity = 0;
+  public peakActive = 0;
+  public droppedSpawns = 0;
+  public runSeed = 1;
   private nextId = 1;
+  private nextFormationId = 1;
   private spawnTimer = 0;
   private ascentWave = 0;
   private randomSeed = 10;
+  private formationCursor = 0;
 
   public constructor() {
-    this.targets = Array.from({ length: TUNING.maxWorldObjects }, () => ({
+    this.targets = Array.from({ length: TUNING.maxWorldObjects }, () => this.createEmptyTarget());
+  }
+
+  public reset(runSeed = 1): void {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.nextId = 1;
+    this.nextFormationId = 1;
+    this.spawnTimer = 0;
+    this.ascentWave = 0;
+    this.runSeed = Math.max(1, Math.floor(runSeed));
+    this.randomSeed = this.runSeed * 97 + 10;
+    this.formationCursor = this.runSeed % 7;
+    this.spawnIntensity = 0;
+    this.peakActive = 0;
+    this.droppedSpawns = 0;
+  }
+
+  public startAscent(): void {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.spawnTimer = 0.18;
+    this.ascentWave = 0;
+  }
+
+  public spawnTargetForTest(kind: TargetKind, x: number, y: number, vx = 0, vy = 0): WorldTarget | null {
+    return this.spawn(kind, x, y, vx, vy, 0, this.nextFormationId++);
+  }
+
+  public enterOrbit(player: PlayerState): void {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.spawnTimer = 1.15;
+    this.spawnOpeningCascade(player);
+  }
+
+  public enterBoss(player: PlayerState): void {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.spawnTimer = 0.7;
+    this.spawnBossEscort(0, STAGE.width / 2, 230, player);
+  }
+
+  public update(
+    delta: number,
+    phase: FlightPhase,
+    player: PlayerState,
+    phaseTime = 0,
+    overdrive = 0,
+    bossPhase = 0,
+    ascentSpeed = 0,
+  ): void {
+    for (const well of this.gravityWells) well.phase += delta;
+    for (const target of this.targets) {
+      if (!target.active) continue;
+      target.age += delta;
+      target.hitCooldown = Math.max(0, target.hitCooldown - delta);
+      target.coverHitCooldown = Math.max(0, target.coverHitCooldown - delta);
+      target.telegraph = Math.max(0, target.telegraph - delta);
+      if (target.primed) target.primeTimer = Math.max(0, target.primeTimer - delta);
+      target.rotation += target.spin * delta;
+
+      if (target.telegraph > 0) continue;
+      if (phase === 'ascent') {
+        target.y += (target.vy + ascentSpeed) * delta;
+        target.x += target.vx * delta;
+        if (target.y > STAGE.height + 60) target.active = false;
+        continue;
+      }
+
+      this.updateTargetBehavior(target, player, delta, phase === 'boss' ? 1 + bossPhase * 0.12 : 1);
+      target.x += target.vx * delta;
+      target.y += target.vy * delta;
+      const padding = 105;
+      if (target.x < -padding || target.x > STAGE.width + padding
+        || target.y < STAGE.hudTop - padding || target.y > STAGE.height + padding) {
+        target.active = false;
+      }
+    }
+
+    this.peakActive = Math.max(this.peakActive, this.activeCount());
+    this.spawnTimer -= delta;
+    if (phase === 'ascent' && this.spawnTimer <= 0) this.spawnAscentWave();
+    if (phase === 'orbit' && this.spawnTimer <= 0) this.replenishArena(player, phaseTime, overdrive);
+    if (phase === 'boss' && this.spawnTimer <= 0) this.replenishBoss(player, phaseTime, bossPhase, overdrive);
+  }
+
+  public activeCount(): number {
+    return this.targets.reduce((count, target) => count + (target.active ? 1 : 0), 0);
+  }
+
+  public activeEnemyCount(): number {
+    return this.targets.reduce(
+      (count, target) => count + (target.active && isEnemyKind(target.kind) ? 1 : 0),
+      0,
+    );
+  }
+
+  public prime(target: WorldTarget, delay: number, chainDepth: number): boolean {
+    if (!target.active || target.kind !== 'mine') return false;
+    const newlyPrimed = !target.primed;
+    target.primed = true;
+    target.chainDepth = newlyPrimed ? Math.max(0, chainDepth) : Math.min(target.chainDepth, Math.max(0, chainDepth));
+    target.primeTimer = newlyPrimed ? Math.max(0, delay) : Math.min(target.primeTimer, Math.max(0, delay));
+    return newlyPrimed;
+  }
+
+  public split(target: WorldTarget, amount: number): number {
+    const count = clamp(Math.floor(amount), 3, 5);
+    const parent = {
+      x: target.x,
+      y: target.y,
+      vx: target.vx,
+      vy: target.vy,
+      rotation: target.rotation,
+      formationId: target.formationId,
+    };
+    let spawned = 0;
+    const activeSlotsNeeded = Math.max(0, this.activeCount() + count - TUNING.peakActiveTargets);
+    const physicalSlotsNeeded = Math.max(
+      0,
+      count - this.targets.reduce((total, candidate) => total + (candidate.active ? 0 : 1), 0),
+    );
+    this.recycleTargets(Math.max(activeSlotsNeeded, physicalSlotsNeeded), target.formationId);
+    for (let index = 0; index < count; index += 1) {
+      const angle = parent.rotation + index / count * Math.PI * 2;
+      if (this.spawn(
+        'splitterFragment',
+        parent.x + Math.cos(angle) * 13,
+        parent.y + Math.sin(angle) * 13,
+        parent.vx * 0.35 + Math.cos(angle) * 125,
+        parent.vy * 0.35 + Math.sin(angle) * 125,
+        0,
+        parent.formationId,
+        true,
+      )) spawned += 1;
+    }
+    return spawned;
+  }
+
+  public detonateFinalEscorts(limit: number): WorldTarget[] {
+    const detonated: WorldTarget[] = [];
+    for (const target of this.targets) {
+      if (!target.active || !isEnemyKind(target.kind)) continue;
+      target.active = false;
+      detonated.push(target);
+      if (detonated.length >= Math.max(0, Math.floor(limit))) break;
+    }
+    return detonated;
+  }
+
+  public spawnFormation(kind: FormationKind, player: PlayerState, telegraph = 0.46): number {
+    const formationId = this.nextFormationId;
+    this.nextFormationId += 1;
+    let spawned = 0;
+    const add = (
+      targetKind: TargetKind,
+      x: number,
+      y: number,
+      vx: number,
+      vy: number,
+      delay = telegraph,
+    ): void => {
+      if (this.spawn(targetKind, x, y, vx, vy, delay, formationId)) spawned += 1;
+    };
+
+    if (kind === 'wedge') {
+      const center = 100 + this.random() * (STAGE.width - 200);
+      const fromTop = this.random() > 0.35;
+      for (let index = 0; index < 7; index += 1) {
+        const row = Math.floor(index / 2);
+        const side = index === 0 ? 0 : (index % 2 === 0 ? 1 : -1);
+        const x = clamp(center + side * row * 31, 24, STAGE.width - 24);
+        const y = fromTop ? STAGE.hudTop - 28 - row * 19 : STAGE.height + 28 + row * 19;
+        add('swarmer', x, y, side * 18, fromTop ? 92 : -92, telegraph + row * 0.035);
+      }
+    } else if (kind === 'arc') {
+      const fromLeft = this.random() > 0.5;
+      for (let index = 0; index < 9; index += 1) {
+        const spread = index - 4;
+        add(
+          'swarmer',
+          fromLeft ? -26 - Math.abs(spread) * 8 : STAGE.width + 26 + Math.abs(spread) * 8,
+          220 + index * 52,
+          fromLeft ? 108 : -108,
+          -spread * 9,
+          telegraph + Math.abs(spread) * 0.025,
+        );
+      }
+    } else if (kind === 'ring') {
+      const radius = 142;
+      for (let index = 0; index < 10; index += 1) {
+        const angle = index / 10 * Math.PI * 2 + this.random() * 0.12;
+        const x = clamp(player.x + Math.cos(angle) * radius, 24, STAGE.width - 24);
+        const y = clamp(player.y + Math.sin(angle) * radius, STAGE.hudTop + 32, STAGE.height - 32);
+        add('swarmer', x, y, -Math.cos(angle) * 72, -Math.sin(angle) * 72);
+      }
+    } else if (kind === 'spiral') {
+      const centerX = 110 + this.random() * (STAGE.width - 220);
+      const centerY = 230 + this.random() * 340;
+      for (let index = 0; index < 10; index += 1) {
+        const angle = index * 1.16;
+        const radius = 28 + index * 10;
+        add(
+          'swarmer',
+          centerX + Math.cos(angle) * radius,
+          centerY + Math.sin(angle) * radius,
+          -Math.sin(angle) * 72,
+          Math.cos(angle) * 72,
+          telegraph + index * 0.025,
+        );
+      }
+    } else if (kind === 'minefield') {
+      const centerX = 100 + this.random() * (STAGE.width - 200);
+      const centerY = 245 + this.random() * 310;
+      const positions = [[0, 0], [-42, -34], [42, -34], [-52, 34], [52, 34], [0, 68], [0, -70]];
+      positions.forEach(([offsetX = 0, offsetY = 0], index) => {
+        add('mine', centerX + offsetX, centerY + offsetY, 0, 0, telegraph + index * 0.025);
+      });
+    } else if (kind === 'splitter') {
+      const fromLeft = this.random() > 0.5;
+      for (let index = 0; index < 3; index += 1) {
+        add('splitter', fromLeft ? -34 : STAGE.width + 34, 245 + index * 155, fromLeft ? 66 : -66, (index - 1) * 12);
+      }
+      for (let index = 0; index < 4; index += 1) {
+        add('swarmer', fromLeft ? -28 : STAGE.width + 28, 205 + index * 126, fromLeft ? 112 : -112, 0, telegraph + 0.12);
+      }
+    } else {
+      const centerX = 110 + this.random() * (STAGE.width - 220);
+      const centerY = 245 + this.random() * 280;
+      for (let index = 0; index < 5; index += 1) {
+        const angle = index / 5 * Math.PI * 2;
+        add('mine', centerX + Math.cos(angle) * 62, centerY + Math.sin(angle) * 62, 0, 0);
+      }
+      add('splitter', centerX, centerY, 22, -18, telegraph + 0.08);
+      for (let index = 0; index < 6; index += 1) {
+        const angle = index / 6 * Math.PI * 2 + Math.PI / 6;
+        add('swarmer', centerX + Math.cos(angle) * 105, centerY + Math.sin(angle) * 105, -Math.cos(angle) * 62, -Math.sin(angle) * 62, telegraph + 0.15);
+      }
+    }
+    return spawned;
+  }
+
+  public spawnBossEscort(stage: number, bossX: number, bossY: number, player: PlayerState): number {
+    let spawned = 0;
+    const formationId = this.nextFormationId;
+    this.nextFormationId += 1;
+    const requested = 5 + stage * 2 + 7 + stage * 2 + (stage >= 1 ? 2 : 0);
+    const activeSlotsNeeded = Math.max(0, this.activeCount() + requested - TUNING.peakActiveTargets);
+    const physicalSlotsNeeded = Math.max(
+      0,
+      requested - this.targets.reduce((total, target) => total + (target.active ? 0 : 1), 0),
+    );
+    this.recycleTargets(Math.max(activeSlotsNeeded, physicalSlotsNeeded), -1);
+    const add = (kind: TargetKind, x: number, y: number, vx: number, vy: number, delay: number): void => {
+      if (this.spawn(kind, x, y, vx, vy, delay, formationId, true)) spawned += 1;
+    };
+    const mineCount = 5 + stage * 2;
+    for (let index = 0; index < mineCount; index += 1) {
+      const angle = index / mineCount * Math.PI * 2 + stage * 0.4;
+      add(
+        'mine',
+        clamp(bossX + Math.cos(angle) * (105 + stage * 13), 24, STAGE.width - 24),
+        clamp(bossY + Math.sin(angle) * (82 + stage * 10) + 52, STAGE.hudTop + 30, STAGE.height - 30),
+        0,
+        0,
+        0.38 + index * 0.025,
+      );
+    }
+    for (let index = 0; index < 7 + stage * 2; index += 1) {
+      const angle = index / (7 + stage * 2) * Math.PI * 2;
+      const x = clamp(player.x + Math.cos(angle) * (155 + stage * 12), 18, STAGE.width - 18);
+      const y = clamp(player.y + Math.sin(angle) * (145 + stage * 10), STAGE.hudTop + 28, STAGE.height - 28);
+      add('swarmer', x, y, -Math.cos(angle) * 82, -Math.sin(angle) * 82, 0.46 + index * 0.018);
+    }
+    if (stage >= 1) {
+      add('splitter', 40, 500, 72, -12, 0.58);
+      add('splitter', STAGE.width - 40, 590, -72, 12, 0.66);
+    }
+    return spawned;
+  }
+
+  private createEmptyTarget(): WorldTarget {
+    return {
       id: 0,
-      kind: 'debris' as TargetKind,
+      kind: 'debris',
       x: 0,
       y: 0,
       vx: 0,
@@ -48,140 +339,142 @@ export class WorldSystem {
       rotation: 0,
       spin: 0,
       hitCooldown: 0,
+      coverHitCooldown: 0,
+      age: 0,
+      behaviorPhase: 0,
+      formationId: 0,
+      telegraph: 0,
+      primeTimer: 0,
+      primed: false,
+      chainDepth: 0,
+      contactDamage: 0,
       active: false,
-    }));
+    };
   }
 
-  public reset(): void {
-    for (const target of this.targets) target.active = false;
-    this.gravityWells.length = 0;
-    this.nextId = 1;
-    this.spawnTimer = 0;
-    this.ascentWave = 0;
-    this.randomSeed = 10;
-  }
-
-  public startAscent(): void {
-    for (const target of this.targets) target.active = false;
-    this.gravityWells.length = 0;
-    this.spawnTimer = 0.8;
-    this.ascentWave = 0;
-  }
-
-  public enterOrbit(): void {
-    for (const target of this.targets) target.active = false;
-    this.gravityWells.length = 0;
-    this.gravityWells.push(
-      { x: 92, y: 276, radius: 104, strength: 12_500, phase: 0.2 },
-      { x: 362, y: 566, radius: 116, strength: 14_500, phase: 2.1 },
-    );
-    this.spawnTimer = 1.2;
-    for (let index = 0; index < 16; index += 1) {
-      const lane = index % 4;
-      const kind = orbitKinds[index % orbitKinds.length] ?? 'debris';
+  private spawnOpeningCascade(player: PlayerState): void {
+    const formationId = this.nextFormationId;
+    this.nextFormationId += 1;
+    this.spawn('satellite', player.x, player.y - 96, 0, 18, 0, formationId);
+    const positions = [
+      [0, -190], [-31, -214], [31, -214], [-61, -238], [61, -238], [-91, -262], [91, -262],
+    ];
+    positions.forEach(([offsetX = 0, offsetY = 0], index) => {
+      this.spawn('swarmer', clamp(player.x + offsetX, 20, STAGE.width - 20), player.y + offsetY, 0, 42, index * 0.025, formationId);
+    });
+    const mineY = player.y - 335;
+    const decisionSide = this.runSeed % 2 === 0 ? -1 : 1;
+    [-42, 0, 42].forEach((offsetX, index) => {
       this.spawn(
-        kind,
-        55 + lane * 112 + (seededNoise(index + 4) - 0.5) * 54,
-        115 + Math.floor(index / 4) * 172 + (seededNoise(index + 8) - 0.5) * 74,
-        (seededNoise(index + 14) - 0.5) * 34,
-        22 + seededNoise(index + 20) * 34,
+        'mine',
+        clamp(player.x + decisionSide * 96 + offsetX, 24, STAGE.width - 24),
+        mineY + Math.abs(index - 1) * 22,
+        0,
+        0,
+        0.18,
+        formationId,
       );
-    }
+    });
+    this.spawn('debris', player.x - 80, player.y - 135, 24, -8, 0, formationId);
+    this.spawn('debris', player.x + 82, player.y - 152, -22, 4, 0, formationId);
   }
 
-  public enterBoss(): void {
-    for (const target of this.targets) target.active = false;
-    this.gravityWells.length = 0;
-    this.gravityWells.push({ x: STAGE.width / 2, y: 245, radius: 132, strength: 18_500, phase: 0 });
-    this.spawnTimer = 0.6;
-    for (let index = 0; index < 6; index += 1) this.spawnBossDrone(index);
-  }
-
-  public update(delta: number, phase: FlightPhase, ascentSpeed = 0): void {
-    for (const well of this.gravityWells) well.phase += delta;
-    for (const target of this.targets) {
-      if (!target.active) continue;
-      target.hitCooldown = Math.max(0, target.hitCooldown - delta);
-      target.rotation += target.spin * delta;
-      target.x += target.vx * delta;
-      target.y += (target.vy + (phase === 'ascent' ? ascentSpeed : 0)) * delta;
-
-      if (phase === 'ascent') {
-        if (target.y > STAGE.height + 70) target.active = false;
-      } else {
-        if (target.x < -80) target.x = STAGE.width + 70;
-        if (target.x > STAGE.width + 80) target.x = -70;
-        if (target.y > STAGE.height + 80) target.y = -70;
-        if (target.y < -90) target.y = STAGE.height + 70;
+  private updateTargetBehavior(target: WorldTarget, player: PlayerState, delta: number, pressure: number): void {
+    if (target.kind === 'swarmer' || target.kind === 'splitterFragment') {
+      const dx = player.x - target.x;
+      const dy = player.y - target.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const acceleration = (target.kind === 'splitterFragment' ? 92 : 58) * pressure;
+      target.vx += dx / distance * acceleration * delta;
+      target.vy += dy / distance * acceleration * delta;
+      const maxSpeed = (target.kind === 'splitterFragment' ? 178 : 132) * pressure;
+      const speed = Math.hypot(target.vx, target.vy);
+      if (speed > maxSpeed) {
+        target.vx *= maxSpeed / speed;
+        target.vy *= maxSpeed / speed;
       }
+    } else if (target.kind === 'splitter') {
+      target.vy += Math.sin(target.age * 2.1 + target.behaviorPhase) * 5 * delta;
+    } else if (target.kind === 'mine') {
+      target.vx *= Math.pow(0.985, delta * 60);
+      target.vy *= Math.pow(0.985, delta * 60);
     }
-
-    this.spawnTimer -= delta;
-    if (phase === 'ascent' && this.spawnTimer <= 0) this.spawnAscentWave();
-    if (phase === 'orbit' && this.spawnTimer <= 0) this.replenishOrbit();
-    if (phase === 'boss' && this.spawnTimer <= 0) this.replenishDrones();
-  }
-
-  public activeCount(): number {
-    return this.targets.reduce((count, target) => count + (target.active ? 1 : 0), 0);
-  }
-
-  public spawnBossDrone(index: number): void {
-    const angle = index / 6 * Math.PI * 2;
-    const radius = 118 + (index % 2) * 24;
-    this.spawn(
-      'drone',
-      STAGE.width / 2 + Math.cos(angle) * radius,
-      230 + Math.sin(angle) * radius * 0.58,
-      Math.sin(angle) * 25,
-      -Math.cos(angle) * 18,
-    );
   }
 
   private spawnAscentWave(): void {
     const kinds: TargetKind[][] = [
-      ['balloon'],
-      ['instrument', 'instrument'],
-      ['aircraft'],
       ['balloon', 'instrument'],
-      ['debris', 'debris', 'debris'],
+      ['aircraft'],
+      ['instrument', 'debris', 'debris'],
     ];
     const wave = kinds[this.ascentWave % kinds.length] ?? ['instrument'];
     wave.forEach((kind, index) => {
-      const spread = (index - (wave.length - 1) / 2) * 56;
-      const noise = (this.random() - 0.5) * 155;
-      this.spawn(kind, STAGE.width / 2 + spread + noise, -50 - index * 24, (this.random() - 0.5) * 22, 15);
+      const spread = (index - (wave.length - 1) / 2) * 54;
+      this.spawn(kind, STAGE.width / 2 + spread + (this.random() - 0.5) * 105, -45 - index * 18, (this.random() - 0.5) * 18, 15, 0, 0);
     });
     this.ascentWave += 1;
-    this.spawnTimer = 2.1 + this.random() * 0.65;
+    this.spawnTimer = 0.78 + this.random() * 0.16;
   }
 
-  private replenishOrbit(): void {
-    if (this.activeCount() < 22) {
-      const amount = 2 + Math.floor(this.random() * 3);
-      for (let index = 0; index < amount; index += 1) {
-        const kind = orbitKinds[Math.floor(this.random() * orbitKinds.length)] ?? 'debris';
-        const edge = Math.floor(this.random() * 3);
-        const x = edge === 0 ? -35 : edge === 1 ? STAGE.width + 35 : 35 + this.random() * (STAGE.width - 70);
-        const y = edge === 2 ? -35 : 100 + this.random() * 620;
-        this.spawn(kind, x, y, (this.random() - 0.5) * 64, 18 + this.random() * 52);
-      }
-    }
-    this.spawnTimer = 1.35 + this.random() * 0.8;
-  }
-
-  private replenishDrones(): void {
-    const drones = this.targets.reduce(
-      (count, target) => count + (target.active && target.kind === 'drone' ? 1 : 0),
-      0,
+  private replenishArena(player: PlayerState, phaseTime: number, overdrive: number): void {
+    this.spawnIntensity = clamp(0.28 + phaseTime / TUNING.orbitDuration * 0.72 + overdrive * 0.32, 0, 1.22);
+    const densityStage = Math.min(4, Math.floor(phaseTime / 12));
+    const surge = phaseTime % 12 >= 8.5;
+    const desired = Math.min(
+      TUNING.peakActiveTargets,
+      17 + densityStage * 2 + Math.round(overdrive * 4) + (surge ? 12 : 0),
     );
-    if (drones < 4) this.spawnBossDrone(Math.floor(this.random() * 6));
-    this.spawnTimer = 2.6;
+    if (this.activeCount() < desired) {
+      const sequence: FormationKind[] = ['wedge', 'minefield', 'arc', 'splitter', 'spiral', 'mixed', 'ring'];
+      const kind = sequence[this.formationCursor % sequence.length] ?? 'wedge';
+      this.formationCursor += 1 + (this.random() > 0.82 ? 1 : 0);
+      this.spawnFormation(kind, player);
+      if (this.activeCount() < desired - 8 && phaseTime > 18) this.spawnFormation('wedge', player, 0.58);
+    }
+    this.spawnTimer = clamp(1.48 - this.spawnIntensity * 0.28, 1.08, 1.42);
   }
 
-  private spawn(kind: TargetKind, x: number, y: number, vx: number, vy: number): WorldTarget | null {
+  private replenishBoss(player: PlayerState, phaseTime: number, bossPhase: number, overdrive: number): void {
+    const pressureRamp = clamp(phaseTime / TUNING.bossPressureRampSeconds, 0, 1);
+    this.spawnIntensity = clamp(0.72 + bossPhase * 0.14 + pressureRamp * 0.34 + overdrive * 0.16, 0, 1.35);
+    const desired = Math.min(
+      TUNING.peakActiveTargets,
+      22 + bossPhase * 4 + Math.round(pressureRamp * 8) + Math.round(overdrive * 3),
+    );
+    if (this.activeCount() < desired) {
+      const sequence: FormationKind[] = bossPhase >= 2
+        ? ['minefield', 'mixed', 'ring']
+        : ['arc', 'wedge', 'splitter', 'minefield'];
+      const kind = sequence[this.formationCursor % sequence.length] ?? 'mixed';
+      this.formationCursor += 1;
+      this.spawnFormation(kind, player, 0.4);
+    }
+    this.spawnTimer = clamp(1.15 - bossPhase * 0.08 - pressureRamp * 0.25 - overdrive * 0.1, 0.72, 1.15);
+  }
+
+  private spawn(
+    kind: TargetKind,
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    telegraph: number,
+    formationId: number,
+    mandatory = false,
+  ): WorldTarget | null {
+    if (!mandatory && this.activeCount() >= TUNING.peakActiveTargets) {
+      this.droppedSpawns += 1;
+      return null;
+    }
+    if (isEnemyKind(kind) && this.activeEnemyCount() >= TUNING.maxEnemies) {
+      this.droppedSpawns += 1;
+      return null;
+    }
     const target = this.targets.find((candidate) => !candidate.active);
-    if (!target) return null;
+    if (!target) {
+      this.droppedSpawns += 1;
+      return null;
+    }
     const profile = PROFILES[kind];
     Object.assign(target, {
       id: this.nextId,
@@ -196,12 +489,38 @@ export class WorldSystem {
       mass: profile.mass,
       score: profile.score,
       rotation: this.random() * Math.PI * 2,
-      spin: (this.random() - 0.5) * 2.8,
+      spin: (this.random() - 0.5) * (kind === 'mine' ? 1.4 : 3.4),
       hitCooldown: 0,
+      coverHitCooldown: 0,
+      age: 0,
+      behaviorPhase: this.random() * Math.PI * 2,
+      formationId,
+      telegraph,
+      primeTimer: 0,
+      primed: false,
+      chainDepth: 0,
+      contactDamage: profile.contactDamage,
       active: true,
     });
     this.nextId += 1;
     return target;
+  }
+
+  private recycleTargets(amount: number, protectedFormationId: number): void {
+    let remaining = Math.max(0, Math.floor(amount));
+    if (remaining <= 0) return;
+    const candidates = this.targets
+      .filter((target) => target.active && target.formationId !== protectedFormationId)
+      .sort((left, right) => {
+        const leftPriority = left.kind === 'debris' || left.kind === 'satellite' || left.kind === 'solar' ? 0 : 1;
+        const rightPriority = right.kind === 'debris' || right.kind === 'satellite' || right.kind === 'solar' ? 0 : 1;
+        return leftPriority - rightPriority || right.age - left.age;
+      });
+    for (const target of candidates) {
+      target.active = false;
+      remaining -= 1;
+      if (remaining <= 0) break;
+    }
   }
 
   private random(): number {
