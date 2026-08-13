@@ -848,6 +848,17 @@ body.overdrive-high .overdrive-meter {
   color: var(--lime);
 }
 
+body[data-phase="boss"] .announcer {
+  width: 1px;
+  min-width: 0;
+  height: 1px;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .results-screen {
   background:
     linear-gradient(180deg, rgb(6 8 13 / 70%), var(--space) 28%),
@@ -1073,7 +1084,7 @@ body.overdrive-high .overdrive-meter {
   border: 1px solid var(--lime);
   padding: 0.45rem;
   background: rgb(6 8 13 / 90%);
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .debug-panel.is-visible {
@@ -1103,6 +1114,7 @@ body.overdrive-high .overdrive-meter {
   background: transparent;
   font: 700 0.45rem ui-monospace, monospace;
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .desktop-placard {

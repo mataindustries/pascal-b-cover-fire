@@ -64,10 +64,16 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   await expect(page.locator('body')).toHaveAttribute('data-phase', 'boss');
   await page.waitForTimeout(1_900);
   await page.screenshot({ path: testInfo.outputPath('boss-mobile.png'), fullPage: true });
-  await page.evaluate(() => {
-    for (let hit = 0; hit < 18; hit += 1) window.__PASCAL_B_DEBUG__?.damageBoss(1);
-  });
-  await page.waitForTimeout(80);
+  await page.locator('#debug-breach').click();
+  await page.waitForTimeout(240);
+  await page.screenshot({ path: testInfo.outputPath('boss-breached-mobile.png'), fullPage: true });
+  await page.locator('#debug-breach').click();
+  await page.waitForTimeout(240);
+  await page.screenshot({ path: testInfo.outputPath('boss-critical-mobile.png'), fullPage: true });
+  await page.locator('#debug-destroy-boss').click();
+  await page.waitForTimeout(1_200);
+  await page.screenshot({ path: testInfo.outputPath('mothership-separation-mobile.png'), fullPage: true });
+  await page.waitForTimeout(1_250);
   await page.screenshot({ path: testInfo.outputPath('mothership-destruction-mobile.png'), fullPage: true });
   await expect(page.locator('#results-screen')).toHaveClass(/is-active/, { timeout: 8_000 });
   await expect(page.locator('#result-mothership')).toHaveText('DESTROYED');
@@ -160,6 +166,39 @@ test('short portrait reserves a touch-safe zone for Core Burst', async ({ page }
   const verticalOffset = (logicalHeight - 800) * 0.5;
   const maximumHaloBottom = geometry.canvas.top + (geometry.playerY + verticalOffset + 78) * scale;
   expect(maximumHaloBottom).toBeLessThan(geometry.burstTop);
+});
+
+test('premium mothership and all reactor anchors fit a 360 by 640 portrait', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 640 });
+  await page.goto('/?debug=1');
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.startMothership());
+  await expect(page.locator('body')).toHaveAttribute('data-phase', 'boss');
+  await page.waitForTimeout(1_900);
+  await page.locator('#debug-panel').evaluate((panel) => {
+    panel.setAttribute('style', 'display: none !important');
+  });
+  await page.screenshot({ path: testInfo.outputPath('mothership-360x640.png'), fullPage: true });
+
+  const weakPoints = [];
+  for (let index = 0; index < 3; index += 1) {
+    const snapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+    weakPoints.push({ x: snapshot?.weakPointX ?? -1, y: snapshot?.weakPointY ?? -1 });
+    if (index < 2) await page.evaluate(() => window.__PASCAL_B_DEBUG__?.breachBoss());
+  }
+  expect(weakPoints).toEqual([
+    expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+    expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+    expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+  ]);
+  for (const weakPoint of weakPoints) {
+    expect(weakPoint.x).toBeGreaterThanOrEqual(19);
+    expect(weakPoint.x).toBeLessThanOrEqual(431);
+    expect(weakPoint.y).toBeGreaterThanOrEqual(93);
+    expect(weakPoint.y).toBeLessThanOrEqual(600);
+  }
+  const spriteLoaded = await page.evaluate(() => performance.getEntriesByType('resource')
+    .some((entry) => entry.name.endsWith('/assets/ships/pascal-b-mothership.png')));
+  expect(spriteLoaded).toBe(true);
 });
 
 test('natural phase timers carry a charged launch into orbit and the interception', async ({ page }) => {

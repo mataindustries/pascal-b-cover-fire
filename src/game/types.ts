@@ -113,7 +113,27 @@ export interface BossState {
   timeRemaining: number;
   droneAngle: number;
   phase: number;
+  damageFxTimer: number;
+  destructionTime: number;
+  destructionStage: number;
   weakPoints: BossWeakPoint[];
+}
+
+export interface HullFragment extends Vec2 {
+  active: boolean;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  width: number;
+  height: number;
+  vx: number;
+  vy: number;
+  rotation: number;
+  spin: number;
+  life: number;
+  maxLife: number;
+  armorSection: boolean;
 }
 
 export interface GameplayWave extends Vec2 {
@@ -221,6 +241,7 @@ export interface DebugSnapshot {
   enemies: number;
   particles: number;
   shockwaves: number;
+  hullFragments: number;
   gameplayWaves: number;
   burstShards: number;
   haloOrbiters: number;
@@ -235,4 +256,5 @@ export interface DebugSnapshot {
   largestCombo: number;
   comboTimer: number;
   maximumMass: number;
+  bossDestructionTime: number;
 }

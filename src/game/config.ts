@@ -17,6 +17,21 @@ export const COLORS = {
   muted: '#87939D',
 } as const;
 
+export const MOTHERSHIP = {
+  spritePath: '/assets/ships/pascal-b-mothership.png',
+  sourceWidth: 1_230,
+  sourceHeight: 1_278,
+  renderWidth: 414,
+  renderHeight: 430.54,
+  centerY: 372,
+  weakPointRadius: 19,
+  coreAnchors: [
+    { x: 250, y: 630 },
+    { x: 615, y: 568 },
+    { x: 980, y: 630 },
+  ] as const,
+} as const;
+
 export const TUNING = {
   fixedStep: 1 / 60,
   maxFrameDelta: 0.1,
@@ -48,6 +63,7 @@ export const TUNING = {
   maxBurstShards: 28,
   maxEffectLinks: 24,
   maxImpactTexts: 6,
+  maxHullFragments: 24,
   maxChainImpactsPerStep: 16,
   maxCatastrophes: 3,
   haloThresholds: [8, 24, 54, 96] as readonly number[],

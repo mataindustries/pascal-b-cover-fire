@@ -1,4 +1,4 @@
-import { COLORS, STAGE, TUNING } from '../config';
+import { COLORS, MOTHERSHIP, STAGE, TUNING } from '../config';
 import { clamp, seededNoise, smoothstep } from '../math';
 import type { BossState, GamePhase, PlayerState, Vec2, WorldTarget } from '../types';
 import type { ComboState } from '../logic/combo';
@@ -47,6 +47,7 @@ const normalizeVector = (x: number, y: number): Vec2 => {
 export class Renderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly stars: Star[];
+  private readonly mothershipImage = new Image();
   private pixelRatio = 1;
   private logicalHeight: number = STAGE.height;
   private verticalOffset = 0;
@@ -56,6 +57,7 @@ export class Renderer {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Canvas 2D is not supported by this browser.');
     this.context = context;
+    this.mothershipImage.src = MOTHERSHIP.spritePath;
     this.stars = Array.from({ length: 82 }, (_, index) => ({
       x: seededNoise(index * 4 + 1) * STAGE.width,
       y: seededNoise(index * 4 + 2) * STAGE.height,
@@ -112,7 +114,7 @@ export class Renderer {
         else this.drawTarget(target);
       }
     }
-    if (state.phase === 'boss') this.drawBoss(state.boss, state.phaseTime);
+    if (state.phase === 'boss') this.drawBoss(state.boss, state.phaseTime, state.effects);
     this.drawGameplayPropagation(state);
     this.drawEffects(state.effects);
     if (state.phase === 'ascent' || state.phase === 'orbit' || state.phase === 'boss' || state.phase === 'launch') {
@@ -725,80 +727,175 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawBoss(boss: BossState, phaseTime: number): void {
+  private drawBoss(boss: BossState, phaseTime: number, effects: EffectsSystem): void {
     if (!boss.active && !boss.destroyed) return;
     const ctx = this.context;
     ctx.save();
     ctx.translate(boss.x, boss.y);
-    const entranceScale = 0.82 + boss.entrance * 0.18;
+    const entranceScale = 0.88 + boss.entrance * 0.12;
     ctx.scale(entranceScale, entranceScale);
-    ctx.globalAlpha = boss.destroyed ? 0.22 : 1;
+    const destructionFade = boss.destroyed
+      ? clamp(1 - Math.max(0, boss.destructionTime - 1.05) * 0.52, 0.2, 1)
+      : 1;
 
     const shieldAlpha = boss.entrance < 1
-      ? 0.18 + boss.entrance * 0.44
-      : 0.12 + Math.min(0.42, boss.contactCooldown * 0.72);
+      ? 0.1 + boss.entrance * 0.28
+      : 0.06 + Math.min(0.24, boss.contactCooldown * 0.45);
     ctx.strokeStyle = boss.hp > 2.5 ? COLORS.blue : COLORS.coral;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.4;
     ctx.globalAlpha = shieldAlpha;
-    ctx.setLineDash([16, 9]);
+    ctx.setLineDash([11, 12]);
     ctx.beginPath();
-    ctx.ellipse(0, 0, 157 + Math.sin(phaseTime * 3) * 3, 87, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 22, 207 + Math.sin(phaseTime * 3) * 2, 201, 0, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = destructionFade;
 
-    ctx.shadowColor = COLORS.coral;
-    ctx.shadowBlur = boss.flash > 0 ? 22 : 0;
-    ctx.fillStyle = boss.flash > 0 ? COLORS.ivory : '#151C23';
-    ctx.strokeStyle = COLORS.steel;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(-138, 5);
-    ctx.lineTo(-102, -25);
-    ctx.lineTo(-64, -37);
-    ctx.lineTo(-38, -64);
-    ctx.lineTo(0, -78);
-    ctx.lineTo(38, -64);
-    ctx.lineTo(64, -37);
-    ctx.lineTo(102, -25);
-    ctx.lineTo(138, 5);
-    ctx.lineTo(94, 34);
-    ctx.lineTo(49, 39);
-    ctx.lineTo(24, 61);
-    ctx.lineTo(-24, 61);
-    ctx.lineTo(-49, 39);
-    ctx.lineTo(-94, 34);
-    ctx.closePath();
-    ctx.fill(); ctx.stroke();
-    ctx.shadowBlur = 0;
+    if (this.mothershipImage.complete && this.mothershipImage.naturalWidth > 0) {
+      ctx.drawImage(
+        this.mothershipImage,
+        -MOTHERSHIP.renderWidth / 2,
+        -MOTHERSHIP.renderHeight / 2,
+        MOTHERSHIP.renderWidth,
+        MOTHERSHIP.renderHeight,
+      );
+    }
 
-    ctx.strokeStyle = '#44515C';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(-94, 5); ctx.lineTo(94, 5); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(-42, -48); ctx.lineTo(-19, 30); ctx.lineTo(19, 30); ctx.lineTo(42, -48); ctx.stroke();
+    if (boss.flash > 0 || boss.phase >= 2 || boss.destroyed) {
+      const unstable = boss.destroyed
+        ? 0.2 + Math.sin(boss.destructionTime * 21) * 0.1
+        : boss.phase >= 2 ? 0.045 + Math.sin(phaseTime * 13) * 0.025 : 0;
+      const energy = ctx.createRadialGradient(0, -8, 8, 0, -8, 158);
+      energy.addColorStop(0, `rgba(255, 176, 0, ${clamp(unstable + boss.flash * 0.15, 0, 0.42)})`);
+      energy.addColorStop(0.52, `rgba(255, 78, 61, ${clamp(unstable * 0.42, 0, 0.16)})`);
+      energy.addColorStop(1, 'rgba(255, 78, 61, 0)');
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillStyle = energy;
+      ctx.fillRect(-207, -215, 414, 431);
+      ctx.globalCompositeOperation = 'source-over';
+    }
 
     boss.weakPoints.forEach((weakPoint) => {
-      const pulse = 0.74 + Math.sin(phaseTime * 7 + weakPoint.index) * 0.22;
+      const pulse = 0.68 + Math.sin(phaseTime * 6.4 + weakPoint.index) * 0.2;
       const alive = weakPoint.active;
-      ctx.strokeStyle = weakPoint.vulnerable ? COLORS.ivory : alive ? COLORS.blue : COLORS.gunmetal;
-      ctx.globalAlpha = alive ? (weakPoint.vulnerable ? pulse * 0.72 : 0.28) : 0.14;
-      ctx.lineWidth = weakPoint.vulnerable ? 2.6 : 1.5;
+      if (!alive) {
+        this.drawDisabledReactor(weakPoint.offsetX, weakPoint.offsetY, weakPoint.index, phaseTime, boss.phase >= 2);
+        return;
+      }
+      const radius = 22 + (weakPoint.vulnerable ? pulse * 2.4 : 0);
+      ctx.strokeStyle = weakPoint.flash > 0 ? COLORS.ivory : weakPoint.vulnerable ? COLORS.coral : COLORS.blue;
+      ctx.globalAlpha = weakPoint.vulnerable ? 0.52 + pulse * 0.25 : 0.22;
+      ctx.lineWidth = weakPoint.vulnerable ? 1.8 : 1;
       ctx.beginPath();
-      ctx.arc(weakPoint.offsetX, weakPoint.offsetY, 19 + pulse * (weakPoint.vulnerable ? 3 : 1), 0, Math.PI * 2);
+      ctx.arc(weakPoint.offsetX, weakPoint.offsetY, radius - 3, -0.42, Math.PI + 0.42);
       ctx.stroke();
-      ctx.fillStyle = weakPoint.flash > 0 ? COLORS.ivory : weakPoint.vulnerable ? COLORS.coral : alive ? '#163342' : '#12161A';
-      ctx.globalAlpha = alive ? (weakPoint.vulnerable ? pulse : 0.56) : 0.35;
-      ctx.beginPath(); ctx.arc(weakPoint.offsetX, weakPoint.offsetY, 12, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = alive ? COLORS.ivory : COLORS.gunmetal; ctx.stroke();
+      this.drawTargetBrackets(weakPoint.offsetX, weakPoint.offsetY, radius);
     });
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = COLORS.ivory;
-    ctx.font = '700 9px monospace';
-    ctx.textAlign = 'center';
-    if (!boss.destroyed) {
-      ctx.fillText(boss.contactCooldown > 0.08 ? 'DEFENSE FIELD CYCLING' : `BREACH WEAK POINT ${Math.min(3, boss.phase + 1)}`, 0, -94);
+
+    if (boss.phase >= 2 && !boss.destroyed && Math.floor(phaseTime * 7) % 3 !== 0) {
+      const left = boss.weakPoints[0];
+      const center = boss.weakPoints[1];
+      if (left && center) {
+        this.drawElectricalArc(left.offsetX + 10, left.offsetY - 15, center.offsetX - 18, center.offsetY + 24, phaseTime, COLORS.blue);
+      }
+    }
+    if (boss.destroyed) {
+      const failureRadius = 30 + clamp(boss.destructionTime, 0, 1.3) * 72;
+      const failure = ctx.createRadialGradient(0, -4, 2, 0, -4, failureRadius);
+      failure.addColorStop(0, 'rgba(243, 231, 206, 0.92)');
+      failure.addColorStop(0.18, 'rgba(255, 176, 0, 0.72)');
+      failure.addColorStop(0.58, 'rgba(255, 78, 61, 0.24)');
+      failure.addColorStop(1, 'rgba(255, 78, 61, 0)');
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = clamp(1 - boss.destructionTime * 0.16, 0.38, 1);
+      ctx.fillStyle = failure;
+      ctx.beginPath(); ctx.arc(0, -4, failureRadius, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
     }
     ctx.restore();
+    this.drawHullFragments(effects);
+  }
+
+  private drawTargetBrackets(x: number, y: number, radius: number): void {
+    const ctx = this.context;
+    const arm = 7;
+    for (const xSign of [-1, 1]) {
+      for (const ySign of [-1, 1]) {
+        const cornerX = x + xSign * radius;
+        const cornerY = y + ySign * radius;
+        ctx.beginPath();
+        ctx.moveTo(cornerX - xSign * arm, cornerY);
+        ctx.lineTo(cornerX, cornerY);
+        ctx.lineTo(cornerX, cornerY - ySign * arm);
+        ctx.stroke();
+      }
+    }
+  }
+
+  private drawDisabledReactor(x: number, y: number, index: number, phaseTime: number, critical: boolean): void {
+    const ctx = this.context;
+    const flicker = 0.72 + Math.sin(phaseTime * (11 + index) + index * 2.3) * 0.12;
+    const deadCore = ctx.createRadialGradient(x, y, 2, x, y, 31);
+    deadCore.addColorStop(0, `rgba(6, 8, 13, ${flicker})`);
+    deadCore.addColorStop(0.5, 'rgba(18, 24, 29, 0.78)');
+    deadCore.addColorStop(1, 'rgba(6, 8, 13, 0)');
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = deadCore;
+    ctx.fillRect(x - 34, y - 34, 68, 68);
+    ctx.strokeStyle = critical ? COLORS.coral : COLORS.amber;
+    ctx.globalAlpha = 0.34 + (critical ? 0.18 : 0);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x - 28, y - 8); ctx.lineTo(x - 13, y - 2); ctx.lineTo(x - 5, y - 16);
+    ctx.moveTo(x + 28, y + 10); ctx.lineTo(x + 12, y + 3); ctx.lineTo(x + 5, y + 18);
+    ctx.stroke();
+    ctx.globalAlpha = 0.72;
+    ctx.strokeStyle = '#66717A';
+    ctx.beginPath(); ctx.moveTo(x - 7, y - 7); ctx.lineTo(x + 7, y + 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x + 8, y - 6); ctx.lineTo(x - 6, y + 8); ctx.stroke();
+  }
+
+  private drawElectricalArc(fromX: number, fromY: number, toX: number, toY: number, phase: number, color: string): void {
+    const ctx = this.context;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.45 + Math.sin(phase * 19) * 0.2;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    const segments = 6;
+    for (let index = 1; index < segments; index += 1) {
+      const progress = index / segments;
+      const offset = Math.sin(phase * 23 + index * 4.7) * 7;
+      ctx.lineTo(fromX + (toX - fromX) * progress, fromY + (toY - fromY) * progress + offset);
+    }
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawHullFragments(effects: EffectsSystem): void {
+    if (!this.mothershipImage.complete || this.mothershipImage.naturalWidth <= 0) return;
+    const ctx = this.context;
+    for (const fragment of effects.hullFragments) {
+      if (!fragment.active) continue;
+      ctx.save();
+      ctx.translate(fragment.x, fragment.y);
+      ctx.rotate(fragment.rotation);
+      ctx.globalAlpha = clamp(fragment.life / Math.min(fragment.maxLife, 0.7), 0, 1);
+      ctx.drawImage(
+        this.mothershipImage,
+        fragment.sourceX,
+        fragment.sourceY,
+        fragment.sourceWidth,
+        fragment.sourceHeight,
+        -fragment.width / 2,
+        -fragment.height / 2,
+        fragment.width,
+        fragment.height,
+      );
+      ctx.restore();
+    }
   }
 
   private drawHalo(state: RenderState): void {
@@ -1050,7 +1147,7 @@ export class Renderer {
     if (state.phase === 'boss' && state.boss.active) {
       for (const weakPoint of state.boss.weakPoints) {
         if (!weakPoint.active) continue;
-        ctx.beginPath(); ctx.arc(weakPoint.x, weakPoint.y, 20, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(weakPoint.x, weakPoint.y, MOTHERSHIP.weakPointRadius, 0, Math.PI * 2); ctx.stroke();
       }
     }
     ctx.setLineDash([]);

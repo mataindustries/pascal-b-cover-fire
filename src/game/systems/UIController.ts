@@ -36,6 +36,8 @@ export interface UICallbacks {
   resetProgress(): void;
   jumpToOrbit(): void;
   triggerBoss(): void;
+  breachBoss(): void;
+  destroyBoss(): void;
   coreBurst(): void;
   spawnFormation(kind: FormationKind): void;
   fillBurst(): void;
@@ -225,6 +227,7 @@ export class UIController {
       `ENEMIES ${snapshot.enemies}`,
       `PARTICLES ${snapshot.particles}`,
       `FX WAVES ${snapshot.shockwaves}`,
+      `HULL FX ${snapshot.hullFragments}`,
       `GAME WAVES ${snapshot.gameplayWaves}`,
       `SHARDS ${snapshot.burstShards}`,
       `HALO ${snapshot.haloOrbiters} / T${snapshot.haloTier}`,
@@ -279,6 +282,8 @@ export class UIController {
     if (this.debugPanel) {
       queryRequired<HTMLButtonElement>(app, '#debug-orbit').addEventListener('click', this.callbacks.jumpToOrbit, options);
       queryRequired<HTMLButtonElement>(app, '#debug-boss').addEventListener('click', this.callbacks.triggerBoss, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-breach').addEventListener('click', this.callbacks.breachBoss, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-destroy-boss').addEventListener('click', this.callbacks.destroyBoss, options);
       queryRequired<HTMLButtonElement>(app, '#debug-swarm').addEventListener('click', () => this.callbacks.spawnFormation('wedge'), options);
       queryRequired<HTMLButtonElement>(app, '#debug-mines').addEventListener('click', () => this.callbacks.spawnFormation('minefield'), options);
       queryRequired<HTMLButtonElement>(app, '#debug-splitters').addEventListener('click', () => this.callbacks.spawnFormation('splitter'), options);
@@ -436,6 +441,7 @@ export class UIController {
             <section id="debug-panel" class="debug-panel is-visible" aria-label="Developer debug controls">
               <pre id="debug-readout">DEBUG INITIALIZING</pre>
               <div><button id="debug-orbit">ARENA</button><button id="debug-boss">BOSS</button></div>
+              <div><button id="debug-breach">BREACH +1</button><button id="debug-destroy-boss">FINAL FX</button></div>
               <div><button id="debug-swarm">SWARM</button><button id="debug-mines">MINES</button><button id="debug-splitters">SPLIT</button></div>
               <div><button id="debug-fill-burst">FILL BURST</button></div>
             </section>` : ''}

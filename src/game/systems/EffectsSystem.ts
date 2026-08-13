@@ -1,12 +1,13 @@
-import { COLORS, TUNING } from '../config';
+import { COLORS, MOTHERSHIP, TUNING } from '../config';
 import { clamp } from '../math';
-import type { EffectLink, ExplosionTier, ImpactText, Particle, Shockwave } from '../types';
+import type { EffectLink, ExplosionTier, HullFragment, ImpactText, Particle, Shockwave } from '../types';
 
 export class EffectsSystem {
   public readonly particles: Particle[];
   public readonly shockwaves: Shockwave[];
   public readonly links: EffectLink[];
   public readonly texts: ImpactText[];
+  public readonly hullFragments: HullFragment[];
   public shakeStrength = 0;
   public shakeTime = 0;
   public flash = 0;
@@ -58,6 +59,24 @@ export class EffectsSystem {
       maxLife: 0,
       color: COLORS.ivory,
       scale: 1,
+    }));
+    this.hullFragments = Array.from({ length: TUNING.maxHullFragments }, () => ({
+      active: false,
+      x: 0,
+      y: 0,
+      sourceX: 0,
+      sourceY: 0,
+      sourceWidth: 0,
+      sourceHeight: 0,
+      width: 0,
+      height: 0,
+      vx: 0,
+      vy: 0,
+      rotation: 0,
+      spin: 0,
+      life: 0,
+      maxLife: 0,
+      armorSection: false,
     }));
   }
 
@@ -112,6 +131,20 @@ export class EffectsSystem {
       text.y -= 24 * delta;
       if (text.life <= 0) text.active = false;
     }
+
+    for (const fragment of this.hullFragments) {
+      if (!fragment.active) continue;
+      fragment.life -= delta;
+      if (fragment.life <= 0) {
+        fragment.active = false;
+        continue;
+      }
+      fragment.x += fragment.vx * delta;
+      fragment.y += fragment.vy * delta;
+      fragment.rotation += fragment.spin * delta;
+      fragment.vx *= Math.pow(0.992, delta * 60);
+      fragment.vy += (fragment.armorSection ? 10 : 22) * delta;
+    }
   }
 
   public burst(
@@ -145,6 +178,83 @@ export class EffectsSystem {
         drag: 0.8 + Math.random() * 1.8,
       });
     }
+  }
+
+  public smoke(x: number, y: number, amount = 1): void {
+    const boundedAmount = Math.max(1, Math.ceil(amount * (this.reducedMotion ? 0.5 : 1) * this.quality));
+    for (let index = 0; index < boundedAmount; index += 1) {
+      const particle = this.nextInactiveParticle();
+      if (!particle) return;
+      const life = 0.55 + Math.random() * 0.5;
+      Object.assign(particle, {
+        active: true,
+        x: x + (Math.random() - 0.5) * 13,
+        y: y + (Math.random() - 0.5) * 8,
+        vx: (Math.random() - 0.5) * 28,
+        vy: -18 - Math.random() * 34,
+        life,
+        maxLife: life,
+        size: 3.5 + Math.random() * 4.5,
+        color: Math.random() > 0.35 ? '#46515A' : '#252C32',
+        drag: 0.45 + Math.random() * 0.45,
+      });
+    }
+  }
+
+  public bossBreachFragments(reactorIndex: number, x: number, y: number, inheritedVx: number): void {
+    const core = MOTHERSHIP.coreAnchors[reactorIndex];
+    if (!core) return;
+    for (let index = 0; index < 6; index += 1) {
+      const angle = index / 6 * Math.PI * 2 + reactorIndex * 0.17;
+      const sourceWidth = 62 + (index % 3) * 12;
+      const sourceHeight = 50 + ((index + 1) % 3) * 10;
+      const sourceX = clamp(core.x + Math.cos(angle) * 86 - sourceWidth / 2, 0, MOTHERSHIP.sourceWidth - sourceWidth);
+      const sourceY = clamp(core.y + Math.sin(angle) * 78 - sourceHeight / 2, 0, MOTHERSHIP.sourceHeight - sourceHeight);
+      const scale = MOTHERSHIP.renderWidth / MOTHERSHIP.sourceWidth;
+      this.spawnHullFragment({
+        x: x + Math.cos(angle) * 26,
+        y: y + Math.sin(angle) * 23,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        width: sourceWidth * scale,
+        height: sourceHeight * scale,
+        vx: inheritedVx * 0.6 + Math.cos(angle) * (72 + index * 9),
+        vy: Math.sin(angle) * (65 + index * 8) - 12,
+        rotation: angle,
+        spin: (index % 2 === 0 ? 1 : -1) * (1.7 + index * 0.32),
+        life: 2.1 + (index % 3) * 0.24,
+        armorSection: false,
+      });
+    }
+  }
+
+  public separateBossSections(x: number, y: number, inheritedVx: number): void {
+    const sections = [
+      { sourceX: 0, sourceY: 360, sourceWidth: 410, sourceHeight: 700, x: -132, y: 35, vx: -92, vy: 28, spin: -0.42 },
+      { sourceX: 820, sourceY: 360, sourceWidth: 410, sourceHeight: 700, x: 132, y: 35, vx: 92, vy: 28, spin: 0.42 },
+      { sourceX: 430, sourceY: 0, sourceWidth: 370, sourceHeight: 500, x: 0, y: -122, vx: 0, vy: -74, spin: 0.24 },
+      { sourceX: 455, sourceY: 650, sourceWidth: 320, sourceHeight: 628, x: 0, y: 126, vx: 8, vy: 94, spin: -0.28 },
+    ] as const;
+    const scale = MOTHERSHIP.renderWidth / MOTHERSHIP.sourceWidth;
+    for (const section of sections) {
+      this.spawnHullFragment({
+        ...section,
+        x: x + section.x,
+        y: y + section.y,
+        width: section.sourceWidth * scale,
+        height: section.sourceHeight * scale,
+        vx: inheritedVx + section.vx,
+        rotation: 0,
+        life: 3.1,
+        armorSection: true,
+      });
+    }
+  }
+
+  public activeHullFragmentCount(): number {
+    return this.hullFragments.reduce((count, fragment) => count + (fragment.active ? 1 : 0), 0);
   }
 
   public link(fromX: number, fromY: number, toX: number, toY: number, color: string = COLORS.amber): void {
@@ -257,6 +367,7 @@ export class EffectsSystem {
     for (const wave of this.shockwaves) wave.active = false;
     for (const link of this.links) link.active = false;
     for (const text of this.texts) text.active = false;
+    for (const fragment of this.hullFragments) fragment.active = false;
     this.shakeStrength = 0;
     this.shakeTime = 0;
     this.flash = 0;
@@ -278,5 +389,11 @@ export class EffectsSystem {
       }
     }
     return null;
+  }
+
+  private spawnHullFragment(fragment: Omit<HullFragment, 'active' | 'maxLife'>): void {
+    const pooled = this.hullFragments.find((candidate) => !candidate.active)
+      ?? this.hullFragments.reduce((oldest, candidate) => candidate.life < oldest.life ? candidate : oldest);
+    Object.assign(pooled, fragment, { active: true, maxLife: fragment.life });
   }
 }

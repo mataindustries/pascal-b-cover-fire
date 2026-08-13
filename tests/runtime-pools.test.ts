@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TUNING } from '../src/game/config';
 import { ChainSystem } from '../src/game/systems/ChainSystem';
+import { EffectsSystem } from '../src/game/systems/EffectsSystem';
 import { HaloSystem } from '../src/game/systems/HaloSystem';
 
 describe('orbital runtime pools', () => {
@@ -36,5 +37,17 @@ describe('orbital runtime pools', () => {
     expect(chains.activeWaveCount()).toBe(0);
     expect(chains.activeShardCount()).toBe(0);
     expect(chains.droppedWaves).toBe(0);
+  });
+
+  it('bounds image-derived mothership fragments and clears them for replay', () => {
+    const effects = new EffectsSystem();
+    for (let breach = 0; breach < 8; breach += 1) {
+      effects.bossBreachFragments(breach % 3, 225, 294, 9);
+    }
+    effects.separateBossSections(225, 294, 9);
+    expect(effects.activeHullFragmentCount()).toBe(TUNING.maxHullFragments);
+
+    effects.clear();
+    expect(effects.activeHullFragmentCount()).toBe(0);
   });
 });

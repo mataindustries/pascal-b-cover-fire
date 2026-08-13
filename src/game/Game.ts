@@ -1,4 +1,4 @@
-import { COLORS, STAGE, TUNING } from './config';
+import { COLORS, MOTHERSHIP, STAGE, TUNING } from './config';
 import {
   chainMilestone,
   minePrimeDelay,
@@ -55,6 +55,8 @@ interface DebugApi {
   triggerBoss(): void;
   startMothership(): void;
   damageBoss(amount?: number): void;
+  breachBoss(): void;
+  destroyBoss(): void;
   fillBurst(): void;
   coreBurst(): void;
   spawnFormation(kind: FormationKind): void;
@@ -116,11 +118,14 @@ const createBoss = (): BossState => ({
   timeRemaining: 0,
   droneAngle: 0,
   phase: 0,
-  weakPoints: [
-    createWeakPoint(0, -76, 8),
-    createWeakPoint(1, 0, -16),
-    createWeakPoint(2, 76, 8),
-  ],
+  damageFxTimer: 0,
+  destructionTime: 0,
+  destructionStage: 0,
+  weakPoints: MOTHERSHIP.coreAnchors.map((anchor, index) => createWeakPoint(
+    index,
+    (anchor.x / MOTHERSHIP.sourceWidth - 0.5) * MOTHERSHIP.renderWidth,
+    (anchor.y / MOTHERSHIP.sourceHeight - 0.5) * MOTHERSHIP.renderHeight,
+  )),
 });
 
 const activeRunPhase = (phase: GamePhase): boolean =>
@@ -192,6 +197,8 @@ export class Game {
       resetProgress: () => this.resetProgress(),
       jumpToOrbit: () => this.debugJumpToOrbit(),
       triggerBoss: () => this.debugTriggerBoss(),
+      breachBoss: () => this.debugBreachBoss(),
+      destroyBoss: () => this.debugDestroyBoss(),
       coreBurst: () => this.activateCoreBurst(),
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
       fillBurst: () => this.debugFillBurst(),
@@ -370,6 +377,8 @@ export class Game {
   private updateBoss(delta: number): void {
     if (this.boss.destroyed) {
       this.bossEndTimer -= delta;
+      this.boss.destructionTime += delta;
+      this.updateBossDestruction();
       this.player.rotation += delta * 14;
       this.backgroundScroll += delta * 95;
       if (this.bossEndTimer <= 0) this.finishRun('victory', 'Three weak points breached. The interception grid became the final cascade.');
@@ -377,12 +386,15 @@ export class Game {
     }
 
     this.boss.entrance = clamp(this.phaseTime / 1.75, 0, 1);
-    this.boss.y = -115 + this.boss.entrance * 332;
-    this.boss.x = STAGE.width / 2 + Math.sin(Math.max(0, this.phaseTime - 1.7) * 0.72) * 34;
+    this.boss.y = -235 + this.boss.entrance * (MOTHERSHIP.centerY + 235);
+    const driftTime = Math.max(0, this.phaseTime - 1.7);
+    this.boss.x = STAGE.width / 2 + Math.sin(driftTime * 0.72) * 12;
+    this.boss.vx = Math.cos(driftTime * 0.72) * 8.64;
     this.boss.contactCooldown = Math.max(0, this.boss.contactCooldown - delta);
     this.boss.flash = Math.max(0, this.boss.flash - delta * 5);
     this.boss.droneAngle += delta * (0.7 + this.boss.phase * 0.16);
     this.syncBossWeakPoints(delta);
+    this.updateBossDamageEffects(delta);
 
     this.updateOrbitalPhysics(delta);
     this.chains.update(delta);
@@ -713,7 +725,8 @@ export class Game {
   private presentChainMilestone(milestone: string, x: number, y: number): void {
     this.effects.clearLabels();
     const color = milestone === 'ONE FRAME' ? COLORS.ivory : milestone === 'MASS EVENT' ? COLORS.lime : COLORS.amber;
-    this.effects.label(milestone, x, y - 26, color, milestone === 'ONE FRAME' ? 1.28 : 1.12);
+    const bossScale = this.phase === 'boss' ? 0.76 : 1;
+    this.effects.label(milestone, x, y - 26, color, (milestone === 'ONE FRAME' ? 1.28 : 1.12) * bossScale);
     this.effects.shake(milestone === 'ONE FRAME' ? 9 : milestone === 'MASS EVENT' ? 6.5 : 4.5, 0.18);
     this.audio.chainMilestone(this.combo.count);
   }
@@ -737,6 +750,19 @@ export class Game {
     this.boss.hp = this.boss.weakPoints.reduce((total, weakPoint) => total + Math.max(0, weakPoint.hp), 0);
   }
 
+  private updateBossDamageEffects(delta: number): void {
+    if (this.boss.phase <= 0 || this.boss.entrance < 0.92) return;
+    this.boss.damageFxTimer -= delta;
+    if (this.boss.damageFxTimer > 0) return;
+    const critical = this.boss.phase >= 2;
+    this.boss.damageFxTimer = critical ? 0.09 : 0.15;
+    for (const weakPoint of this.boss.weakPoints) {
+      if (weakPoint.active) continue;
+      this.effects.smoke(weakPoint.x, weakPoint.y - 3, critical ? 2 : 1);
+      this.effects.burst(weakPoint.x, weakPoint.y, critical ? 2 : 1, Math.random() > 0.45 ? COLORS.amber : COLORS.blue, 105);
+    }
+  }
+
   private currentWeakPoint(): BossWeakPoint | null {
     return this.boss.weakPoints.find((weakPoint) => weakPoint.active && weakPoint.vulnerable) ?? null;
   }
@@ -750,7 +776,7 @@ export class Game {
       this.player,
       this.player.radius + 2,
       weakPoint,
-      21,
+      MOTHERSHIP.weakPointRadius + 2,
     );
     const haloHit = this.halo.tier() > 0
       && Math.hypot(weakPoint.x - this.player.x, weakPoint.y - this.player.y) <= this.halo.radius + 18;
@@ -775,7 +801,7 @@ export class Game {
       const weakPointKey = -(weakPoint.index + 1);
       if (!wave.active || wave.hitTargetIds.includes(weakPointKey)) continue;
       const distance = Math.hypot(weakPoint.x - wave.x, weakPoint.y - wave.y);
-      if (!shockwaveCanHit(distance, 20, wave.radius, false)) continue;
+      if (!shockwaveCanHit(distance, MOTHERSHIP.weakPointRadius, wave.radius, false)) continue;
       wave.hitTargetIds.push(weakPointKey);
       this.damageWeakPoint(weakPoint, wave.source === 'burst' ? 1.15 : 0.75, wave.source, { x: wave.x, y: wave.y });
       return;
@@ -783,7 +809,13 @@ export class Game {
     for (const shard of this.chains.shards) {
       const weakPointKey = -(weakPoint.index + 1);
       if (!shard.active || shard.hitTargetIds.includes(weakPointKey)) continue;
-      if (!sweptCircleHit({ x: shard.previousX, y: shard.previousY }, shard, shard.radius, weakPoint, 20)) continue;
+      if (!sweptCircleHit(
+        { x: shard.previousX, y: shard.previousY },
+        shard,
+        shard.radius,
+        weakPoint,
+        MOTHERSHIP.weakPointRadius,
+      )) continue;
       shard.hitTargetIds.push(weakPointKey);
       shard.penetration -= 1;
       this.damageWeakPoint(weakPoint, 1, 'burst', { x: shard.previousX, y: shard.previousY });
@@ -826,8 +858,8 @@ export class Game {
     this.chains.emitWave(weakPoint.x, weakPoint.y, 138, 1.15, 1, 'shockwave');
     this.effects.clearLabels();
     this.effects.explosion(weakPoint.x, weakPoint.y, 'catastrophe', COLORS.coral);
-    this.effects.label(`WEAK POINT ${weakPoint.index + 1} BREACHED`, STAGE.width / 2, 145, COLORS.lime, 1.08);
-    this.ui.announce(`BREACH ${weakPoint.index + 1} / 3 // VOLATILE ESCORTS`, 'victory');
+    this.effects.bossBreachFragments(weakPoint.index, weakPoint.x, weakPoint.y, this.boss.vx);
+    this.updateHud();
     const next = this.boss.weakPoints[weakPoint.index + 1];
     if (next) {
       this.world.spawnBossEscort(weakPoint.index + 1, this.boss.x, this.boss.y, this.player);
@@ -842,24 +874,59 @@ export class Game {
     this.boss.active = false;
     this.boss.destroyed = true;
     this.boss.hp = 0;
-    this.bossEndTimer = 2.8;
+    this.bossEndTimer = 3.55;
+    this.boss.destructionTime = 0;
+    this.boss.destructionStage = 0;
     this.score += completionBonus(true, this.player.integrity) + 8_000;
     this.combo = registerComboHit(this.combo, TUNING.comboWindow);
-    this.effects.hitStop = 0.12;
-    this.effects.flash = this.reducedMotion ? 0.16 : 0.52;
-    this.effects.shake(11, 0.6);
+    this.effects.hitStop = 0.095;
+    this.effects.flash = this.reducedMotion ? 0.13 : 0.38;
+    this.effects.shake(8.5, 0.34);
     this.effects.clearLabels();
-    for (const escort of this.world.detonateFinalEscorts(24)) {
-      this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
+    const finalEscorts = this.world.detonateFinalEscorts(24);
+    for (let index = 0; index < Math.min(10, finalEscorts.length); index += 1) {
+      const escort = finalEscorts[index];
+      if (escort) this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
     }
-    for (let index = 0; index < 6; index += 1) {
-      const angle = index / 6 * Math.PI * 2;
-      const x = this.boss.x + Math.cos(angle) * 74;
-      const y = this.boss.y + Math.sin(angle) * 38;
-      this.effects.explosion(x, y, index % 2 === 0 ? 'catastrophe' : 'cascade', index % 2 === 0 ? COLORS.coral : COLORS.blue);
-    }
-    this.ui.announce('MOTHERSHIP CASCADE COMPLETE', 'victory');
     this.audio.bossDestroyed();
+  }
+
+  private updateBossDestruction(): void {
+    const time = this.boss.destructionTime;
+    const weakPoints = this.boss.weakPoints;
+    if (this.boss.destructionStage === 0 && time >= 0.18) {
+      const center = weakPoints[1];
+      if (center) this.effects.explosion(center.x, center.y, 'cascade', COLORS.amber);
+      this.boss.destructionStage = 1;
+    } else if (this.boss.destructionStage === 1 && time >= 0.42) {
+      const left = weakPoints[0];
+      if (left) this.effects.explosion(left.x, left.y, 'cascade', COLORS.coral);
+      this.boss.destructionStage = 2;
+    } else if (this.boss.destructionStage === 2 && time >= 0.72) {
+      this.effects.explosion(this.boss.x, this.boss.y - 8, 'catastrophe', COLORS.ivory);
+      this.effects.flash = Math.max(this.effects.flash, this.reducedMotion ? 0.12 : 0.34);
+      this.boss.destructionStage = 3;
+    } else if (this.boss.destructionStage === 3 && time >= 1.04) {
+      this.effects.separateBossSections(this.boss.x, this.boss.y, this.boss.vx);
+      this.effects.explosion(this.boss.x, this.boss.y - 112, 'cascade', COLORS.blue);
+      this.effects.explosion(this.boss.x, this.boss.y + 116, 'cascade', COLORS.coral);
+      this.boss.destructionStage = 4;
+    } else if (this.boss.destructionStage === 4 && time >= 1.38) {
+      this.effects.explosion(this.boss.x + 132, this.boss.y + 22, 'burst', COLORS.amber);
+      this.boss.destructionStage = 5;
+    } else if (this.boss.destructionStage === 5 && time >= 1.66) {
+      this.effects.explosion(this.boss.x + 44, this.boss.y - 76, 'burst', COLORS.coral);
+      this.boss.destructionStage = 6;
+    } else if (this.boss.destructionStage === 6 && time >= 1.94) {
+      this.effects.explosion(this.boss.x - 52, this.boss.y + 74, 'burst', COLORS.amber);
+      this.boss.destructionStage = 7;
+    } else if (this.boss.destructionStage === 7 && time >= 2.22) {
+      this.effects.explosion(this.boss.x - 142, this.boss.y + 18, 'cascade', COLORS.coral);
+      this.effects.ring(this.boss.x, this.boss.y, 330, COLORS.ivory, 5);
+      this.effects.hitStop = Math.max(this.effects.hitStop, this.reducedMotion ? 0.035 : 0.085);
+      this.effects.shake(11, 0.52);
+      this.boss.destructionStage = 8;
+    }
   }
 
   private updateVelocityRecord(): void {
@@ -1230,6 +1297,20 @@ export class Game {
     this.damageWeakPoint(weakPoint, amount, 'cover', undefined, true);
   }
 
+  private debugBreachBoss(): void {
+    if (!this.debugEnabled) return;
+    if (this.phase !== 'boss') this.debugTriggerBoss();
+    const weakPoint = this.currentWeakPoint();
+    if (!weakPoint) return;
+    this.damageWeakPoint(weakPoint, weakPoint.hp, 'cover', undefined, true);
+  }
+
+  private debugDestroyBoss(): void {
+    if (!this.debugEnabled) return;
+    this.debugTriggerBoss();
+    while (this.currentWeakPoint()) this.debugBreachBoss();
+  }
+
   private debugSnapshot(): DebugSnapshot {
     const weakPoint = this.currentWeakPoint();
     return {
@@ -1248,6 +1329,7 @@ export class Game {
       enemies: this.world.activeEnemyCount(),
       particles: this.effects.particles.reduce((count, particle) => count + (particle.active ? 1 : 0), 0),
       shockwaves: this.effects.shockwaves.reduce((count, wave) => count + (wave.active ? 1 : 0), 0),
+      hullFragments: this.effects.activeHullFragmentCount(),
       gameplayWaves: this.chains.activeWaveCount(),
       burstShards: this.chains.activeShardCount(),
       haloOrbiters: this.halo.activeCount(),
@@ -1262,6 +1344,7 @@ export class Game {
       largestCombo: this.combo.largest,
       comboTimer: this.combo.timer,
       maximumMass: TUNING.haloMassCapacity,
+      bossDestructionTime: this.boss.destructionTime,
     };
   }
 
@@ -1272,6 +1355,8 @@ export class Game {
       triggerBoss: () => this.debugTriggerBoss(),
       startMothership: () => this.debugTriggerBoss(),
       damageBoss: (amount = 1) => this.debugDamageBoss(amount),
+      breachBoss: () => this.debugBreachBoss(),
+      destroyBoss: () => this.debugDestroyBoss(),
       fillBurst: () => this.debugFillBurst(),
       coreBurst: () => this.activateCoreBurst(),
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
