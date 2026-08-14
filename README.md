@@ -2,7 +2,7 @@
 
 > One frame. Zero survivors.
 
-A complete mobile-first browser-game foundation about a steel cover becoming an orbital chain reaction. The visual art is procedural Canvas/CSS, sound is synthesized with Web Audio, and progress is stored locally—there are no remote assets, API keys, or backend services.
+A complete mobile-first browser-game foundation about a steel cover becoming an orbital chain reaction. The presentation combines procedural Canvas/CSS effects with repository-local premium target art, sound is synthesized with Web Audio, and progress is stored locally—there are no remote assets, API keys, or backend services.
 
 ## Run it
 
@@ -19,6 +19,7 @@ Open the URL printed by Vite. The server listens on all interfaces for Codespace
 
 | Command | Purpose |
 | --- | --- |
+| `npm run assets:premium` | Alpha-crop and resize the six preserved premium source PNGs into transparent runtime WebP files |
 | `npm run dev` | Start the development server on `0.0.0.0` |
 | `npm run build` | Strict TypeScript compile and production build |
 | `npm run preview` | Preview the production build on `0.0.0.0` |
@@ -55,7 +56,7 @@ Audio starts only after a user gesture. Sound, volume, reset, reduced-motion sup
 
 ## Gameplay loop
 
-The playable run moves without loading screens through a short shaft ritual, a 2.75-second ascent montage, about 60 seconds of formation-driven orbital panic, a three-weak-point mothership breach, results, persistent upgrades, and immediate replay. Swarmers converge in wedges, arcs, rings, and spirals; volatile mines prime one another; Splitters become aggressive fragments; satellites and junk supply neutral halo mass. Every destruction can propagate a bounded gameplay shockwave.
+The playable run moves without loading screens through a short shaft ritual, a 2.75-second ascent montage, about 60 seconds of formation-driven orbital panic, a three-weak-point mothership breach, results, persistent upgrades, and immediate replay. Swarmers converge in wedges, arcs, rings, and spirals; volatile mines and premium fuel depots prime nearby targets; Splitters and premium interceptors become aggressive fragments; communications satellites, solar stations, gold telescopes, observation modules, and junk supply neutral halo mass. Every destruction can propagate a bounded gameplay shockwave. Three to eight recognizable premium targets share the arena with the small vector roster, depending on wave pressure.
 
 Collected wreckage forms a compact 2–3-band contact-damage halo with four named tiers at 8, 24, 54, and 96 tonnes. Active halo mass is capped at 128 tonnes while peak captured mass remains a result stat. Keeping mass improves protection and contact power; Core Burst requires 15 tonnes plus full charge, retains 56–73.5% depending on Magnetic Rim, always drops a full halo by at least one tier, and launches up to 28 penetrating shards plus a mine-priming radial wave. Rapid destruction and danger grazing build temporary Overdrive, which raises speed, score, spawn pressure, color, and synth intensity without granting invulnerability. The mothership uses the same contacts, shockwaves, mines, and Core Burst rules as the arena—there is no boss-escape countdown.
 
@@ -64,13 +65,15 @@ Three persistent tracks are available: Launch Pressure, Reinforced Cover, and Ma
 ## Architecture
 
 - `src/game/Game.ts` owns the fixed-step state machine and run lifecycle.
+- `art-source/premium-targets/` preserves the untouched supplied RGBA PNGs; `public/assets/premium/` contains alpha-cropped WebP runtime derivatives.
+- `src/game/assets/` defines preload/fallback behavior, target-to-art mapping, palettes, scale, and authored fragment crop regions.
 - `src/game/config.ts` centralizes mobile budgets and tuning.
 - `src/game/logic/` contains tested pure combo, chain eligibility/milestones, halo/Core Burst, Overdrive, scoring, persistence, and upgrade rules.
 - `src/game/systems/` separates 2-D input, voice-limited audio, gameplay-wave/Burst pools, visual effects, halo debris, UI, and formation-driven world objects.
-- `src/game/render/Renderer.ts` draws procedural environments, entities, trajectory prediction, the cover, and debug bounds.
+- `src/game/render/Renderer.ts` draws environments, preloaded premium sprites, procedural fallbacks, trajectory prediction, the cover, and debug bounds.
 - `tests/` contains pure-logic coverage plus a Playwright mobile flow that completes a run, buys an upgrade, and restarts.
 
-Simulation uses a fixed 60 Hz step with bounded catch-up and remains safe when rendering falls toward 30 FPS. Cover and Core Burst impacts use swept checks. The runtime preallocates 72 target slots with a 50-active gameplay peak, 36 halo orbiters, 28 Burst shards, 12 gameplay waves, 220 cosmetic particles, 12 visual rings, and 24 causal connector flashes. Splitter and boss payloads recycle lower-priority pooled targets at saturation, and Burst/mine waves recycle an expiring ordinary gameplay wave rather than losing the signature action. Propagation is non-recursive and processes at most 16 target-wave impacts per fixed step. Slow frame-time hysteresis reduces cosmetic emissions without changing enemy logic. The canvas preserves its geometry in tall phone viewports, reserves the lower action-button zone, and caps device-pixel ratio at 2.
+Simulation uses a fixed 60 Hz step with bounded catch-up and remains safe when rendering falls toward 30 FPS. Cover and Core Burst impacts use swept checks. The runtime preallocates 72 target slots with a 50-active gameplay peak, 36 halo orbiters, 28 Burst shards, 12 gameplay waves, 220 cosmetic particles, 12 visual rings, 24 causal connector flashes, 48 recognizable premium wreckage pieces, and 8 staged-breakup cues. Splitter and boss payloads recycle lower-priority pooled targets at saturation, and Burst/mine waves recycle an expiring ordinary gameplay wave rather than losing the signature action. Propagation is non-recursive and processes at most 16 target-wave impacts per fixed step. Slow frame-time hysteresis reduces cosmetic emissions without changing enemy logic. The canvas preserves its geometry in tall phone viewports, reserves the lower action-button zone, and caps device-pixel ratio at 2.
 
 ## Debug mode
 
@@ -98,7 +101,7 @@ The application is a single static entry point and uses no client router, server
 ## Current limitations
 
 - One cover, one orbital arena, one compact enemy roster, and one mothership are intentionally in scope.
-- Art and audio are polished procedural foundations, not final commissioned assets or a music score.
+- Premium target and mothership art is integrated; the player cover, small swarm roster, environments, UI, and most effects remain procedural.
 - Progress is browser-local; there are no accounts, cloud sync, or leaderboard.
 - The automated browser pass targets mobile Chromium. Physical-device Safari and a wider Android hardware matrix remain a release-testing task.
 - There is no installable/offline PWA layer yet.

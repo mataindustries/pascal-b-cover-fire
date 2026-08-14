@@ -39,6 +39,10 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   const openingSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
   expect(openingSnapshot?.largestCombo).toBeGreaterThanOrEqual(5);
   expect(openingSnapshot?.targets).toBeLessThanOrEqual(50);
+  expect(openingSnapshot?.premiumTargets).toBeGreaterThanOrEqual(3);
+  expect(openingSnapshot?.premiumTargets).toBeLessThanOrEqual(8);
+  expect(openingSnapshot?.premiumAssetsLoaded).toBe(7);
+  expect(openingSnapshot?.premiumAssetFailures).toBe(0);
 
   await page.locator('#debug-mines').click();
   await page.locator('#debug-fill-burst').click();
@@ -110,6 +114,7 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   expect(secondRunPools?.particles).toBeLessThanOrEqual(220);
   expect(secondRunPools?.haloOrbiters).toBeLessThanOrEqual(36);
   expect(secondRunPools?.shockwaves).toBeLessThanOrEqual(12);
+  expect(secondRunPools?.premiumFragments).toBeLessThanOrEqual(48);
   expect(secondRunPools?.gameplayWaves).toBeLessThanOrEqual(12);
   expect(secondRunPools?.burstShards).toBeLessThanOrEqual(28);
   expect(secondRunPools?.peakTargets).toBeLessThanOrEqual(50);
@@ -199,6 +204,29 @@ test('premium mothership and all reactor anchors fit a 360 by 640 portrait', asy
   const spriteLoaded = await page.evaluate(() => performance.getEntriesByType('resource')
     .some((entry) => entry.name.endsWith('/assets/ships/pascal-b-mothership.png')));
   expect(spriteLoaded).toBe(true);
+});
+
+test('premium target files preload and a failed image falls back without console errors', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  await page.route('**/assets/premium/fuel-depot.webp', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/webp',
+    body: 'intentionally invalid image payload',
+  }));
+  await page.goto('/?debug=1');
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.enterArena());
+  await page.waitForTimeout(1_000);
+  const snapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(snapshot?.premiumAssetsLoaded).toBe(6);
+  expect(snapshot?.premiumAssetFailures).toBe(1);
+  expect(snapshot?.premiumTargets).toBeGreaterThanOrEqual(3);
+  const assetRequests = await page.evaluate(() => performance.getEntriesByType('resource')
+    .filter((entry) => entry.name.includes('/assets/premium/')).length);
+  expect(assetRequests).toBeGreaterThanOrEqual(5);
+  expect(consoleErrors).toEqual([]);
 });
 
 test('natural phase timers carry a charged launch into orbit and the interception', async ({ page }) => {

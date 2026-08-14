@@ -1,6 +1,15 @@
 import { STAGE, TUNING } from '../config';
+import { PREMIUM_SPAWN_SEQUENCE, premiumGameplayKind } from '../assets/premium';
 import { clamp, seededNoise } from '../math';
-import type { FlightPhase, FormationKind, GravityWell, PlayerState, TargetKind, WorldTarget } from '../types';
+import type {
+  FlightPhase,
+  FormationKind,
+  GravityWell,
+  PlayerState,
+  PremiumArtKind,
+  TargetKind,
+  WorldTarget,
+} from '../types';
 
 interface TargetProfile {
   radius: number;
@@ -39,6 +48,7 @@ export class WorldSystem {
   private ascentWave = 0;
   private randomSeed = 10;
   private formationCursor = 0;
+  private premiumCursor = 0;
 
   public constructor() {
     this.targets = Array.from({ length: TUNING.maxWorldObjects }, () => this.createEmptyTarget());
@@ -54,6 +64,7 @@ export class WorldSystem {
     this.runSeed = Math.max(1, Math.floor(runSeed));
     this.randomSeed = this.runSeed * 97 + 10;
     this.formationCursor = this.runSeed % 7;
+    this.premiumCursor = this.runSeed % PREMIUM_SPAWN_SEQUENCE.length;
     this.spawnIntensity = 0;
     this.peakActive = 0;
     this.droppedSpawns = 0;
@@ -70,6 +81,10 @@ export class WorldSystem {
     return this.spawn(kind, x, y, vx, vy, 0, this.nextFormationId++);
   }
 
+  public spawnPremiumTargetForTest(art: PremiumArtKind, x: number, y: number): WorldTarget | null {
+    return this.spawn(premiumGameplayKind(art), x, y, 0, 0, 0, this.nextFormationId++, false, art);
+  }
+
   public enterOrbit(player: PlayerState): void {
     for (const target of this.targets) target.active = false;
     this.gravityWells.length = 0;
@@ -82,6 +97,7 @@ export class WorldSystem {
     this.gravityWells.length = 0;
     this.spawnTimer = 0.7;
     this.spawnBossEscort(0, STAGE.width / 2, 230, player);
+    this.ensurePremiumTargets(player, 0, true);
   }
 
   public update(
@@ -101,6 +117,7 @@ export class WorldSystem {
       target.coverHitCooldown = Math.max(0, target.coverHitCooldown - delta);
       target.telegraph = Math.max(0, target.telegraph - delta);
       if (target.primed) target.primeTimer = Math.max(0, target.primeTimer - delta);
+      target.impactFlash = Math.max(0, target.impactFlash - delta * 5.6);
       target.rotation += target.spin * delta;
 
       if (target.telegraph > 0) continue;
@@ -135,6 +152,13 @@ export class WorldSystem {
   public activeEnemyCount(): number {
     return this.targets.reduce(
       (count, target) => count + (target.active && isEnemyKind(target.kind) ? 1 : 0),
+      0,
+    );
+  }
+
+  public activePremiumCount(): number {
+    return this.targets.reduce(
+      (count, target) => count + (target.active && target.premiumArt !== null ? 1 : 0),
       0,
     );
   }
@@ -295,8 +319,19 @@ export class WorldSystem {
       requested - this.targets.reduce((total, target) => total + (target.active ? 0 : 1), 0),
     );
     this.recycleTargets(Math.max(activeSlotsNeeded, physicalSlotsNeeded), -1);
-    const add = (kind: TargetKind, x: number, y: number, vx: number, vy: number, delay: number): void => {
-      if (this.spawn(kind, x, y, vx, vy, delay, formationId, true)) spawned += 1;
+    const add = (
+      kind: TargetKind,
+      x: number,
+      y: number,
+      vx: number,
+      vy: number,
+      delay: number,
+      premiumArt: PremiumArtKind | null = null,
+    ): void => {
+      const boundedArt = premiumArt && this.activePremiumCount() < TUNING.maxPremiumTargets
+        ? premiumArt
+        : null;
+      if (this.spawn(kind, x, y, vx, vy, delay, formationId, true, boundedArt)) spawned += 1;
     };
     const mineCount = 5 + stage * 2;
     for (let index = 0; index < mineCount; index += 1) {
@@ -314,11 +349,14 @@ export class WorldSystem {
       const angle = index / (7 + stage * 2) * Math.PI * 2;
       const x = clamp(player.x + Math.cos(angle) * (155 + stage * 12), 18, STAGE.width - 18);
       const y = clamp(player.y + Math.sin(angle) * (145 + stage * 10), STAGE.hudTop + 28, STAGE.height - 28);
-      add('swarmer', x, y, -Math.cos(angle) * 82, -Math.sin(angle) * 82, 0.46 + index * 0.018);
+      const premiumEscort = index === 0 || index === Math.floor((7 + stage * 2) / 2)
+        ? 'alienInterceptor'
+        : null;
+      add('swarmer', x, y, -Math.cos(angle) * 82, -Math.sin(angle) * 82, 0.46 + index * 0.018, premiumEscort);
     }
     if (stage >= 1) {
-      add('splitter', 40, 500, 72, -12, 0.58);
-      add('splitter', STAGE.width - 40, 590, -72, 12, 0.66);
+      add('splitter', 40, 500, 72, -12, 0.58, 'alienInterceptor');
+      add('splitter', STAGE.width - 40, 590, -72, 12, 0.66, 'alienInterceptor');
     }
     return spawned;
   }
@@ -348,6 +386,8 @@ export class WorldSystem {
       primed: false,
       chainDepth: 0,
       contactDamage: 0,
+      premiumArt: null,
+      impactFlash: 0,
       active: false,
     };
   }
@@ -377,6 +417,7 @@ export class WorldSystem {
     });
     this.spawn('debris', player.x - 80, player.y - 135, 24, -8, 0, formationId);
     this.spawn('debris', player.x + 82, player.y - 152, -22, 4, 0, formationId);
+    this.ensurePremiumTargets(player, 0);
   }
 
   private updateTargetBehavior(target: WorldTarget, player: PlayerState, delta: number, pressure: number): void {
@@ -424,6 +465,7 @@ export class WorldSystem {
       TUNING.peakActiveTargets,
       17 + densityStage * 2 + Math.round(overdrive * 4) + (surge ? 12 : 0),
     );
+    this.ensurePremiumTargets(player, phaseTime);
     if (this.activeCount() < desired) {
       const sequence: FormationKind[] = ['wedge', 'minefield', 'arc', 'splitter', 'spiral', 'mixed', 'ring'];
       const kind = sequence[this.formationCursor % sequence.length] ?? 'wedge';
@@ -441,6 +483,7 @@ export class WorldSystem {
       TUNING.peakActiveTargets,
       22 + bossPhase * 4 + Math.round(pressureRamp * 8) + Math.round(overdrive * 3),
     );
+    this.ensurePremiumTargets(player, phaseTime, true);
     if (this.activeCount() < desired) {
       const sequence: FormationKind[] = bossPhase >= 2
         ? ['minefield', 'mixed', 'ring']
@@ -461,6 +504,7 @@ export class WorldSystem {
     telegraph: number,
     formationId: number,
     mandatory = false,
+    premiumArt: PremiumArtKind | null = null,
   ): WorldTarget | null {
     if (!mandatory && this.activeCount() >= TUNING.peakActiveTargets) {
       this.droppedSpawns += 1;
@@ -500,6 +544,8 @@ export class WorldSystem {
       primed: false,
       chainDepth: 0,
       contactDamage: profile.contactDamage,
+      premiumArt,
+      impactFlash: 0,
       active: true,
     });
     this.nextId += 1;
@@ -520,6 +566,50 @@ export class WorldSystem {
       target.active = false;
       remaining -= 1;
       if (remaining <= 0) break;
+    }
+  }
+
+  private ensurePremiumTargets(player: PlayerState, phaseTime: number, boss = false): void {
+    const desired = clamp(
+      TUNING.minPremiumTargets + Math.floor(phaseTime / 16) + (boss ? 1 : 0),
+      TUNING.minPremiumTargets,
+      TUNING.maxPremiumTargets,
+    );
+    let missing = desired - this.activePremiumCount();
+    while (missing > 0 && this.activeCount() < TUNING.peakActiveTargets) {
+      const art = PREMIUM_SPAWN_SEQUENCE[this.premiumCursor % PREMIUM_SPAWN_SEQUENCE.length];
+      this.premiumCursor += 1;
+      if (!art) break;
+      const kind = premiumGameplayKind(art);
+      const edge = this.premiumCursor % 4;
+      const margin = kind === 'solar' ? 48 : 38;
+      const x = edge === 0
+        ? -margin
+        : edge === 1
+          ? STAGE.width + margin
+          : 58 + this.random() * (STAGE.width - 116);
+      const y = edge === 2
+        ? STAGE.hudTop - margin
+        : edge === 3
+          ? STAGE.height + margin
+          : 160 + this.random() * 470;
+      const dx = player.x - x;
+      const dy = player.y - y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const speed = art === 'alienInterceptor' ? 72 : 24 + this.random() * 20;
+      const target = this.spawn(
+        kind,
+        x,
+        y,
+        dx / distance * speed,
+        dy / distance * speed,
+        0.34 + this.random() * 0.18,
+        this.nextFormationId++,
+        false,
+        art,
+      );
+      if (!target) break;
+      missing -= 1;
     }
   }
 

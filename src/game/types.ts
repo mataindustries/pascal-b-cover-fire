@@ -11,6 +11,13 @@ export type GamePhase =
 export type FlightPhase = 'ascent' | 'orbit' | 'boss';
 export type Outcome = 'victory' | 'failure';
 export type UpgradeKey = 'launchPressure' | 'reinforcedCover' | 'magneticRim';
+export type PremiumArtKind =
+  | 'communicationsSatellite'
+  | 'goldTelescope'
+  | 'fuelDepot'
+  | 'solarPowerStation'
+  | 'observationModule'
+  | 'alienInterceptor';
 export type TargetKind =
   | 'balloon'
   | 'instrument'
@@ -68,6 +75,8 @@ export interface WorldTarget extends Vec2 {
   primed: boolean;
   chainDepth: number;
   contactDamage: number;
+  premiumArt: PremiumArtKind | null;
+  impactFlash: number;
   active: boolean;
 }
 
@@ -172,6 +181,36 @@ export interface Particle extends Vec2 {
   size: number;
   color: string;
   drag: number;
+  visual: 'spark' | 'wisp';
+}
+
+export interface PremiumFragment extends Vec2 {
+  active: boolean;
+  art: PremiumArtKind;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  width: number;
+  height: number;
+  vx: number;
+  vy: number;
+  rotation: number;
+  spin: number;
+  life: number;
+  maxLife: number;
+  glow: number;
+  stage: 'detached' | 'core';
+}
+
+export interface PremiumDestructionCue extends Vec2 {
+  active: boolean;
+  art: PremiumArtKind;
+  rotation: number;
+  inheritedVx: number;
+  inheritedVy: number;
+  seed: number;
+  delay: number;
 }
 
 export interface Shockwave extends Vec2 {
@@ -242,6 +281,10 @@ export interface DebugSnapshot {
   particles: number;
   shockwaves: number;
   hullFragments: number;
+  premiumTargets: number;
+  premiumFragments: number;
+  premiumAssetsLoaded: number;
+  premiumAssetFailures: number;
   gameplayWaves: number;
   burstShards: number;
   haloOrbiters: number;

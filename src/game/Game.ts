@@ -26,6 +26,8 @@ import {
 } from './logic/upgrades';
 import { clamp, magnitude, normalize, sweptCircleHit } from './math';
 import { Renderer } from './render/Renderer';
+import { PremiumAssetStore } from './assets/PremiumAssetStore';
+import { PREMIUM_ASSETS } from './assets/premium';
 import { AudioManager } from './systems/AudioManager';
 import { ChainSystem } from './systems/ChainSystem';
 import { EffectsSystem } from './systems/EffectsSystem';
@@ -43,6 +45,7 @@ import type {
   Outcome,
   PersistedState,
   PlayerState,
+  PremiumArtKind,
   RunStats,
   UpgradeKey,
   Vec2,
@@ -60,6 +63,7 @@ interface DebugApi {
   fillBurst(): void;
   coreBurst(): void;
   spawnFormation(kind: FormationKind): void;
+  spawnPremium(art: PremiumArtKind): void;
   snapshot(): DebugSnapshot & {
     score: number;
     mass: number;
@@ -137,6 +141,7 @@ export class Game {
   private readonly debugEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
   private readonly ui: UIController;
   private readonly renderer: Renderer;
+  private readonly premiumAssets = new PremiumAssetStore();
   private readonly input: InputManager;
   private readonly audio: AudioManager;
   private readonly effects = new EffectsSystem();
@@ -177,6 +182,7 @@ export class Game {
   private launchQuality = 0;
   private lowFrameTime = 0;
   private cosmeticQuality = 1;
+  private premiumAssetsReady = false;
 
   public constructor(app: HTMLElement) {
     this.persisted = loadPersistedState();
@@ -203,7 +209,7 @@ export class Game {
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
       fillBurst: () => this.debugFillBurst(),
     }, this.debugEnabled);
-    this.renderer = new Renderer(this.ui.canvas);
+    this.renderer = new Renderer(this.ui.canvas, this.premiumAssets);
     this.input = new InputManager(this.ui.canvas, {
       onPointerDown: (input) => this.pointerDown(input),
       onPointerMove: (input) => this.pointerMove(input),
@@ -221,6 +227,9 @@ export class Game {
     window.addEventListener('resize', this.handleResize, { passive: true });
 
     if (this.debugEnabled) this.installDebugApi();
+    void this.premiumAssets.load().then(() => {
+      this.premiumAssetsReady = true;
+    });
     this.frameRequest = requestAnimationFrame(this.frame);
   }
 
@@ -301,7 +310,7 @@ export class Game {
     this.backgroundScroll += delta * (inArenaPhase(this.phase) ? 48 + this.overdrive.value * 38 : 9);
 
     if (this.phase === 'boot') {
-      if (this.phaseTime >= 0.9) this.setPhase('title');
+      if (this.phaseTime >= 0.9 && this.premiumAssetsReady) this.setPhase('title');
       return;
     }
     if (!activeRunPhase(this.phase)) return;
@@ -554,8 +563,18 @@ export class Game {
     origin?: Vec2,
   ): void {
     if (!target.active) return;
+    target.impactFlash = 1;
+    if (target.premiumArt) {
+      this.effects.premiumImpact(
+        target.x,
+        target.y,
+        target.premiumArt,
+        origin ? Math.atan2(target.y - origin.y, target.x - origin.x) : undefined,
+      );
+    }
     if (target.kind === 'mine') {
-      const delay = source === 'shockwave' ? minePrimeDelay(depth) : source === 'halo' ? 0.09 : 0.055;
+      const baseDelay = source === 'shockwave' ? minePrimeDelay(depth) : source === 'halo' ? 0.09 : 0.055;
+      const delay = target.premiumArt === 'fuelDepot' ? Math.max(0.18, baseDelay) : baseDelay;
       const newlyPrimed = this.world.prime(target, delay, depth);
       if (newlyPrimed) {
         this.effects.ring(target.x, target.y, 34, COLORS.coral, 1.5);
@@ -579,6 +598,11 @@ export class Game {
     const x = target.x;
     const y = target.y;
     const wasSplitter = kind === 'splitter';
+    const premiumArt = target.premiumArt;
+    const rotation = target.rotation;
+    const inheritedVx = target.vx;
+    const inheritedVy = target.vy;
+    const targetId = target.id;
     target.active = false;
 
     this.combo = registerComboHit(this.combo, TUNING.comboWindow);
@@ -623,21 +647,50 @@ export class Game {
         ? COLORS.coral
         : COLORS.blue;
     this.effects.explosion(x, y, explosionTier, color, Math.atan2(this.player.vy, this.player.vx));
+    if (premiumArt) {
+      const palette = PREMIUM_ASSETS[premiumArt].palette;
+      this.effects.premiumDestruction(
+        premiumArt,
+        x,
+        y,
+        rotation,
+        inheritedVx,
+        inheritedVy,
+        targetId,
+      );
+      if (premiumArt === 'goldTelescope' || premiumArt === 'observationModule') {
+        this.effects.burst(x, y, 10, palette[0], 300);
+        this.effects.burst(x, y, 8, palette[2], 235);
+      }
+    }
     if (origin && (source === 'shockwave' || source === 'burst' || source === 'mine')) {
       this.effects.link(origin.x, origin.y, x, y, source === 'burst' ? COLORS.blue : COLORS.amber);
     }
     this.audio.chainTick(this.combo.count, kind === 'mine');
 
     if (arena) {
-      const radius = shockwaveRadius(kind, this.combo.count);
+      const radius = premiumArt === 'fuelDepot'
+        ? 144
+        : premiumArt === 'solarPowerStation'
+          ? 112
+          : premiumArt === 'goldTelescope' || premiumArt === 'observationModule'
+            ? 94
+            : shockwaveRadius(kind, this.combo.count);
+      const damage = premiumArt === 'fuelDepot'
+        ? 1.25
+        : premiumArt === 'solarPowerStation'
+          ? 1.05
+          : premiumArt === 'goldTelescope' || premiumArt === 'observationModule'
+            ? 1
+            : shockwaveDamage(kind);
       if (depth < 5) {
         this.chains.emitWave(
           x,
           y,
           radius,
-          shockwaveDamage(kind),
+          damage,
           depth,
-          kind === 'mine' ? 'mine' : 'shockwave',
+          kind === 'mine' || premiumArt === 'fuelDepot' ? 'mine' : 'shockwave',
         );
       }
       const milestone = chainMilestone(this.combo.count);
@@ -760,6 +813,7 @@ export class Game {
       if (weakPoint.active) continue;
       this.effects.smoke(weakPoint.x, weakPoint.y - 3, critical ? 2 : 1);
       this.effects.burst(weakPoint.x, weakPoint.y, critical ? 2 : 1, Math.random() > 0.45 ? COLORS.amber : COLORS.blue, 105);
+      this.effects.plasmaWisp(weakPoint.x, weakPoint.y, critical ? 2 : 1, COLORS.blue);
     }
   }
 
@@ -886,7 +940,19 @@ export class Game {
     const finalEscorts = this.world.detonateFinalEscorts(24);
     for (let index = 0; index < Math.min(10, finalEscorts.length); index += 1) {
       const escort = finalEscorts[index];
-      if (escort) this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
+      if (!escort) continue;
+      this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
+      if (escort.premiumArt) {
+        this.effects.premiumDestruction(
+          escort.premiumArt,
+          escort.x,
+          escort.y,
+          escort.rotation,
+          escort.vx,
+          escort.vy,
+          escort.id,
+        );
+      }
     }
     this.audio.bossDestroyed();
   }
@@ -1284,6 +1350,18 @@ export class Game {
     if (inArenaPhase(this.phase)) this.world.spawnFormation(kind, this.player, 0.12);
   }
 
+  private debugSpawnPremium(art: PremiumArtKind): void {
+    if (!this.debugEnabled) return;
+    this.debugJumpToOrbit();
+    if (inArenaPhase(this.phase)) {
+      this.world.spawnPremiumTargetForTest(
+        art,
+        clamp(this.player.x + 82, 46, STAGE.width - 46),
+        clamp(this.player.y - 126, STAGE.hudTop + 48, TUNING.playerArenaBottom - 48),
+      );
+    }
+  }
+
   private debugFillBurst(): void {
     if (!this.debugEnabled) return;
     this.debugJumpToOrbit();
@@ -1330,6 +1408,10 @@ export class Game {
       particles: this.effects.particles.reduce((count, particle) => count + (particle.active ? 1 : 0), 0),
       shockwaves: this.effects.shockwaves.reduce((count, wave) => count + (wave.active ? 1 : 0), 0),
       hullFragments: this.effects.activeHullFragmentCount(),
+      premiumTargets: this.world.activePremiumCount(),
+      premiumFragments: this.effects.activePremiumFragmentCount(),
+      premiumAssetsLoaded: this.premiumAssets.report().loaded,
+      premiumAssetFailures: this.premiumAssets.report().failed,
       gameplayWaves: this.chains.activeWaveCount(),
       burstShards: this.chains.activeShardCount(),
       haloOrbiters: this.halo.activeCount(),
@@ -1360,6 +1442,7 @@ export class Game {
       fillBurst: () => this.debugFillBurst(),
       coreBurst: () => this.activateCoreBurst(),
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
+      spawnPremium: (art) => this.debugSpawnPremium(art),
       snapshot: () => ({
         ...this.debugSnapshot(),
         score: this.score,

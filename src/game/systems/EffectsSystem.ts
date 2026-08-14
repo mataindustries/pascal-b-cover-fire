@@ -1,6 +1,17 @@
 import { COLORS, MOTHERSHIP, TUNING } from '../config';
+import { PREMIUM_ASSETS } from '../assets/premium';
 import { clamp } from '../math';
-import type { EffectLink, ExplosionTier, HullFragment, ImpactText, Particle, Shockwave } from '../types';
+import type {
+  EffectLink,
+  ExplosionTier,
+  HullFragment,
+  ImpactText,
+  Particle,
+  PremiumArtKind,
+  PremiumDestructionCue,
+  PremiumFragment,
+  Shockwave,
+} from '../types';
 
 export class EffectsSystem {
   public readonly particles: Particle[];
@@ -8,6 +19,8 @@ export class EffectsSystem {
   public readonly links: EffectLink[];
   public readonly texts: ImpactText[];
   public readonly hullFragments: HullFragment[];
+  public readonly premiumFragments: PremiumFragment[];
+  public readonly premiumDestructionCues: PremiumDestructionCue[];
   public shakeStrength = 0;
   public shakeTime = 0;
   public flash = 0;
@@ -28,6 +41,7 @@ export class EffectsSystem {
       size: 0,
       color: COLORS.ivory,
       drag: 0,
+      visual: 'spark',
     }));
     this.shockwaves = Array.from({ length: TUNING.maxShockwaves }, () => ({
       active: false,
@@ -77,6 +91,37 @@ export class EffectsSystem {
       life: 0,
       maxLife: 0,
       armorSection: false,
+    }));
+    this.premiumFragments = Array.from({ length: TUNING.maxPremiumFragments }, () => ({
+      active: false,
+      art: 'communicationsSatellite',
+      x: 0,
+      y: 0,
+      sourceX: 0,
+      sourceY: 0,
+      sourceWidth: 0,
+      sourceHeight: 0,
+      width: 0,
+      height: 0,
+      vx: 0,
+      vy: 0,
+      rotation: 0,
+      spin: 0,
+      life: 0,
+      maxLife: 0,
+      glow: 0,
+      stage: 'detached',
+    }));
+    this.premiumDestructionCues = Array.from({ length: TUNING.maxPremiumDestructionCues }, () => ({
+      active: false,
+      art: 'communicationsSatellite',
+      x: 0,
+      y: 0,
+      rotation: 0,
+      inheritedVx: 0,
+      inheritedVy: 0,
+      seed: 0,
+      delay: 0,
     }));
   }
 
@@ -145,6 +190,30 @@ export class EffectsSystem {
       fragment.vx *= Math.pow(0.992, delta * 60);
       fragment.vy += (fragment.armorSection ? 10 : 22) * delta;
     }
+
+    for (const fragment of this.premiumFragments) {
+      if (!fragment.active) continue;
+      fragment.life -= delta;
+      if (fragment.life <= 0) {
+        fragment.active = false;
+        continue;
+      }
+      fragment.x += fragment.vx * delta;
+      fragment.y += fragment.vy * delta;
+      fragment.rotation += fragment.spin * delta;
+      fragment.vx *= Math.pow(0.994, delta * 60);
+      fragment.vy *= Math.pow(0.997, delta * 60);
+      fragment.glow = Math.max(0, fragment.glow - delta * 1.6);
+    }
+
+    for (const cue of this.premiumDestructionCues) {
+      if (!cue.active) continue;
+      cue.delay -= delta;
+      if (cue.delay <= 0) {
+        cue.active = false;
+        this.spawnPremiumCoreFragments(cue);
+      }
+    }
   }
 
   public burst(
@@ -176,6 +245,7 @@ export class EffectsSystem {
         size: 1.2 + Math.random() * 3.8,
         color,
         drag: 0.8 + Math.random() * 1.8,
+        visual: 'spark',
       });
     }
   }
@@ -197,8 +267,106 @@ export class EffectsSystem {
         size: 3.5 + Math.random() * 4.5,
         color: Math.random() > 0.35 ? '#46515A' : '#252C32',
         drag: 0.45 + Math.random() * 0.45,
+        visual: 'wisp',
       });
     }
+  }
+
+  public plasmaWisp(x: number, y: number, amount: number, color: string = COLORS.blue): void {
+    const boundedAmount = Math.max(1, Math.ceil(amount * (this.reducedMotion ? 0.5 : 1) * this.quality));
+    for (let index = 0; index < boundedAmount; index += 1) {
+      const particle = this.nextInactiveParticle();
+      if (!particle) return;
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 22 + Math.random() * 52;
+      const life = 0.48 + Math.random() * 0.46;
+      Object.assign(particle, {
+        active: true,
+        x: x + (Math.random() - 0.5) * 10,
+        y: y + (Math.random() - 0.5) * 10,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 12,
+        life,
+        maxLife: life,
+        size: 3 + Math.random() * 4.5,
+        color,
+        drag: 0.7 + Math.random() * 0.7,
+        visual: 'wisp',
+      });
+    }
+  }
+
+  public premiumImpact(x: number, y: number, art: PremiumArtKind, direction?: number): void {
+    const palette = PREMIUM_ASSETS[art].palette;
+    this.burst(x, y, 4, palette[0], 165, direction);
+    this.burst(x, y, 3, palette[1], 118, direction);
+    this.ring(x, y, art === 'solarPowerStation' ? 42 : 32, palette[2], 1.4);
+  }
+
+  public premiumDestruction(
+    art: PremiumArtKind,
+    x: number,
+    y: number,
+    rotation: number,
+    inheritedVx: number,
+    inheritedVy: number,
+    seed: number,
+  ): void {
+    const definition = PREMIUM_ASSETS[art];
+    const detached = definition.fragments.filter((fragment) => fragment.stage === 'detached');
+    const immediateCount = art === 'solarPowerStation' ? Math.min(6, detached.length) : detached.length;
+    for (let index = 0; index < immediateCount; index += 1) {
+      const fragment = detached[index];
+      if (!fragment) continue;
+      this.spawnPremiumFragment(art, fragment, x, y, rotation, inheritedVx, inheritedVy, seed + index * 17, index);
+    }
+    if (art === 'solarPowerStation' || art === 'alienInterceptor') {
+      const cue = this.premiumDestructionCues.find((candidate) => !candidate.active)
+        ?? this.premiumDestructionCues.reduce((oldest, candidate) => candidate.delay < oldest.delay ? candidate : oldest);
+      Object.assign(cue, {
+        active: true,
+        art,
+        x,
+        y,
+        rotation,
+        inheritedVx,
+        inheritedVy,
+        seed,
+        delay: art === 'solarPowerStation' ? 0.16 : 0.12,
+      });
+    } else {
+      this.spawnPremiumCoreFragments({
+        active: true,
+        art,
+        x,
+        y,
+        rotation,
+        inheritedVx,
+        inheritedVy,
+        seed,
+        delay: 0,
+      });
+    }
+    const palette = definition.palette;
+    this.burst(x, y, art === 'fuelDepot' ? 26 : 15, palette[0], art === 'fuelDepot' ? 355 : 245);
+    this.burst(x, y, 10, palette[1], 190);
+    this.smoke(x, y, art === 'fuelDepot' || art === 'solarPowerStation' ? 5 : 3);
+    this.plasmaWisp(
+      x,
+      y,
+      art === 'alienInterceptor' || art === 'observationModule' ? 5 : 3,
+      art === 'fuelDepot' ? '#FF8B24' : palette[2],
+    );
+    if (art === 'fuelDepot') {
+      this.ring(x, y, 154, '#FFF8E8', 4.8);
+      this.ring(x, y, 119, '#FF8B24', 3.2);
+    } else {
+      this.ring(x, y, art === 'solarPowerStation' ? 104 : 72, palette[2], 2.4);
+    }
+  }
+
+  public activePremiumFragmentCount(): number {
+    return this.premiumFragments.reduce((count, fragment) => count + (fragment.active ? 1 : 0), 0);
   }
 
   public bossBreachFragments(reactorIndex: number, x: number, y: number, inheritedVx: number): void {
@@ -368,6 +536,8 @@ export class EffectsSystem {
     for (const link of this.links) link.active = false;
     for (const text of this.texts) text.active = false;
     for (const fragment of this.hullFragments) fragment.active = false;
+    for (const fragment of this.premiumFragments) fragment.active = false;
+    for (const cue of this.premiumDestructionCues) cue.active = false;
     this.shakeStrength = 0;
     this.shakeTime = 0;
     this.flash = 0;
@@ -395,5 +565,80 @@ export class EffectsSystem {
     const pooled = this.hullFragments.find((candidate) => !candidate.active)
       ?? this.hullFragments.reduce((oldest, candidate) => candidate.life < oldest.life ? candidate : oldest);
     Object.assign(pooled, fragment, { active: true, maxLife: fragment.life });
+  }
+
+  private spawnPremiumCoreFragments(cue: PremiumDestructionCue): void {
+    const definition = PREMIUM_ASSETS[cue.art];
+    const core = definition.fragments.filter((fragment) => fragment.stage === 'core');
+    for (let index = 0; index < core.length; index += 1) {
+      const fragment = core[index];
+      if (!fragment) continue;
+      this.spawnPremiumFragment(
+        cue.art,
+        fragment,
+        cue.x,
+        cue.y,
+        cue.rotation,
+        cue.inheritedVx,
+        cue.inheritedVy,
+        cue.seed + 97 + index * 23,
+        index + 6,
+      );
+    }
+    if (cue.art === 'solarPowerStation') {
+      this.explosion(cue.x, cue.y, 'cascade', '#FF9C32');
+    } else if (cue.art === 'alienInterceptor') {
+      this.explosion(cue.x, cue.y, 'burst', '#FF6A22');
+      this.burst(cue.x, cue.y, 12, '#2CBAFF', 270);
+    }
+  }
+
+  private spawnPremiumFragment(
+    art: PremiumArtKind,
+    fragment: (typeof PREMIUM_ASSETS)[PremiumArtKind]['fragments'][number],
+    x: number,
+    y: number,
+    rotation: number,
+    inheritedVx: number,
+    inheritedVy: number,
+    seed: number,
+    index: number,
+  ): void {
+    const definition = PREMIUM_ASSETS[art];
+    const sourceX = Math.round(fragment.x * definition.imageWidth);
+    const sourceY = Math.round(fragment.y * definition.imageHeight);
+    const sourceWidth = Math.max(1, Math.round(fragment.width * definition.imageWidth));
+    const sourceHeight = Math.max(1, Math.round(fragment.height * definition.imageHeight));
+    const scale = definition.renderWidth / definition.imageWidth;
+    const localX = (fragment.x + fragment.width * 0.5 - 0.5) * definition.renderWidth;
+    const renderHeight = definition.imageHeight * scale;
+    const localY = (fragment.y + fragment.height * 0.5 - 0.5) * renderHeight;
+    const rotatedX = Math.cos(rotation) * localX - Math.sin(rotation) * localY;
+    const rotatedY = Math.sin(rotation) * localX + Math.cos(rotation) * localY;
+    const angle = index / Math.max(4, definition.fragments.length) * Math.PI * 2 + seed * 0.019;
+    const speed = fragment.stage === 'core' ? 92 + (seed % 31) : 128 + (seed % 57);
+    const life = fragment.stage === 'core' ? 1.6 + (seed % 5) * 0.12 : 2.05 + (seed % 7) * 0.11;
+    const pooled = this.premiumFragments.find((candidate) => !candidate.active)
+      ?? this.premiumFragments.reduce((oldest, candidate) => candidate.life < oldest.life ? candidate : oldest);
+    Object.assign(pooled, {
+      active: true,
+      art,
+      x: x + rotatedX * 0.58,
+      y: y + rotatedY * 0.58,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      width: Math.max(8, sourceWidth * scale * 0.86),
+      height: Math.max(8, sourceHeight * scale * 0.86),
+      vx: inheritedVx * 0.34 + Math.cos(angle) * speed,
+      vy: inheritedVy * 0.34 + Math.sin(angle) * speed,
+      rotation: rotation + angle * 0.22,
+      spin: (index % 2 === 0 ? 1 : -1) * (1.1 + (seed % 9) * 0.17),
+      life,
+      maxLife: life,
+      glow: 1,
+      stage: fragment.stage,
+    });
   }
 }

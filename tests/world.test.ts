@@ -90,4 +90,42 @@ describe('bounded formation world', () => {
     expect(splitter.hp).toBe(2);
     expect(splitter.coverHitCooldown).toBeGreaterThan(0);
   });
+
+  it('keeps a deterministic three-to-eight premium mixture mapped onto existing rules', () => {
+    const first = new WorldSystem();
+    const second = new WorldSystem();
+    const cover = player();
+    first.reset(707);
+    second.reset(707);
+    first.enterOrbit(cover);
+    second.enterOrbit(cover);
+
+    const firstMapping = first.targets
+      .filter((target) => target.active && target.premiumArt)
+      .map((target) => `${target.id}:${target.kind}:${target.premiumArt}`);
+    const secondMapping = second.targets
+      .filter((target) => target.active && target.premiumArt)
+      .map((target) => `${target.id}:${target.kind}:${target.premiumArt}`);
+    expect(firstMapping).toEqual(secondMapping);
+    expect(first.activePremiumCount()).toBeGreaterThanOrEqual(TUNING.minPremiumTargets);
+    expect(first.activePremiumCount()).toBeLessThanOrEqual(TUNING.maxPremiumTargets);
+
+    const depot = first.spawnPremiumTargetForTest('fuelDepot', 100, 100);
+    const station = first.spawnPremiumTargetForTest('solarPowerStation', 140, 100);
+    const interceptor = first.spawnPremiumTargetForTest('alienInterceptor', 180, 100);
+    expect(depot?.kind).toBe('mine');
+    expect(station?.kind).toBe('solar');
+    expect(interceptor?.kind).toBe('splitter');
+  });
+
+  it('hard-caps premium art through repeated mandatory boss escort waves', () => {
+    const world = new WorldSystem();
+    const cover = player();
+    world.reset(909);
+    world.enterBoss(cover);
+    for (let stage = 0; stage < 8; stage += 1) {
+      world.spawnBossEscort(stage % 3, STAGE.width / 2, 230, cover);
+      expect(world.activePremiumCount()).toBeLessThanOrEqual(TUNING.maxPremiumTargets);
+    }
+  });
 });

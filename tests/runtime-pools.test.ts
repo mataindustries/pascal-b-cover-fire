@@ -50,4 +50,27 @@ describe('orbital runtime pools', () => {
     effects.clear();
     expect(effects.activeHullFragmentCount()).toBe(0);
   });
+
+  it('bounds recognizable premium wreckage and cancels staged breakup on replay', () => {
+    const effects = new EffectsSystem();
+    for (let index = 0; index < 20; index += 1) {
+      effects.premiumDestruction(
+        index % 2 === 0 ? 'solarPowerStation' : 'observationModule',
+        225,
+        400,
+        index * 0.1,
+        12,
+        -8,
+        index + 1,
+      );
+    }
+    expect(effects.activePremiumFragmentCount()).toBe(TUNING.maxPremiumFragments);
+    expect(effects.premiumDestructionCues.filter((cue) => cue.active).length)
+      .toBeLessThanOrEqual(TUNING.maxPremiumDestructionCues);
+
+    effects.clear();
+    effects.update(1);
+    expect(effects.activePremiumFragmentCount()).toBe(0);
+    expect(effects.premiumDestructionCues.some((cue) => cue.active)).toBe(false);
+  });
 });

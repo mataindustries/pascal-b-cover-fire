@@ -228,6 +228,8 @@ export class UIController {
       `PARTICLES ${snapshot.particles}`,
       `FX WAVES ${snapshot.shockwaves}`,
       `HULL FX ${snapshot.hullFragments}`,
+      `PREMIUM ${snapshot.premiumTargets} · WRECK ${snapshot.premiumFragments}`,
+      `ASSETS ${snapshot.premiumAssetsLoaded}/7 · FAIL ${snapshot.premiumAssetFailures}`,
       `GAME WAVES ${snapshot.gameplayWaves}`,
       `SHARDS ${snapshot.burstShards}`,
       `HALO ${snapshot.haloOrbiters} / T${snapshot.haloTier}`,

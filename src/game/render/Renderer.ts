@@ -1,6 +1,8 @@
 import { COLORS, MOTHERSHIP, STAGE, TUNING } from '../config';
+import { PREMIUM_ASSETS, premiumFallbackColor, type PremiumAssetKey } from '../assets/premium';
+import type { PremiumAssetStore } from '../assets/PremiumAssetStore';
 import { clamp, seededNoise, smoothstep } from '../math';
-import type { BossState, GamePhase, PlayerState, Vec2, WorldTarget } from '../types';
+import type { BossState, GamePhase, PlayerState, PremiumArtKind, Vec2, WorldTarget } from '../types';
 import type { ComboState } from '../logic/combo';
 import type { OverdriveState } from '../logic/overdrive';
 import type { ChainSystem } from '../systems/ChainSystem';
@@ -47,17 +49,18 @@ const normalizeVector = (x: number, y: number): Vec2 => {
 export class Renderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly stars: Star[];
-  private readonly mothershipImage = new Image();
   private pixelRatio = 1;
   private logicalHeight: number = STAGE.height;
   private verticalOffset = 0;
   private renderQuality = 1;
 
-  public constructor(private readonly canvas: HTMLCanvasElement) {
+  public constructor(
+    private readonly canvas: HTMLCanvasElement,
+    private readonly premiumAssets: PremiumAssetStore,
+  ) {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Canvas 2D is not supported by this browser.');
     this.context = context;
-    this.mothershipImage.src = MOTHERSHIP.spritePath;
     this.stars = Array.from({ length: 82 }, (_, index) => ({
       x: seededNoise(index * 4 + 1) * STAGE.width,
       y: seededNoise(index * 4 + 2) * STAGE.height,
@@ -95,6 +98,7 @@ export class Renderer {
     ctx.translate(shakeX, shakeY + this.verticalOffset);
 
     this.drawBackground(state);
+    if (state.phase === 'orbit' || state.phase === 'boss') this.drawScreenEdgeResponse(state);
     if (state.phase === 'launch') this.drawLaunchSite(state);
     if (state.phase === 'ascent') {
       this.drawLaunchAfterglow(state);
@@ -116,6 +120,7 @@ export class Renderer {
     }
     if (state.phase === 'boss') this.drawBoss(state.boss, state.phaseTime, state.effects);
     this.drawGameplayPropagation(state);
+    this.drawPremiumFragments(state.effects);
     this.drawEffects(state.effects);
     if (state.phase === 'ascent' || state.phase === 'orbit' || state.phase === 'boss' || state.phase === 'launch') {
       this.drawHalo(state);
@@ -187,6 +192,23 @@ export class Renderer {
     limb.addColorStop(0.35, '#06080D00');
     ctx.fillStyle = limb;
     ctx.fillRect(0, 560, STAGE.width, 240);
+  }
+
+  private drawScreenEdgeResponse(state: RenderState): void {
+    const ctx = this.context;
+    const speed = Math.hypot(state.player.vx, state.player.vy);
+    const intensity = clamp((speed - 260) / 340 + state.overdrive.value * 0.46, 0, 0.9);
+    if (intensity <= 0.03) return;
+    const edge = ctx.createLinearGradient(0, 0, STAGE.width, 0);
+    edge.addColorStop(0, `rgba(68, 199, 244, ${intensity * 0.22})`);
+    edge.addColorStop(0.11, 'rgba(68, 199, 244, 0)');
+    edge.addColorStop(0.89, 'rgba(255, 78, 61, 0)');
+    edge.addColorStop(1, `rgba(255, 78, 61, ${intensity * 0.18})`);
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = edge;
+    ctx.fillRect(0, STAGE.hudTop, STAGE.width, STAGE.height - STAGE.hudTop);
+    ctx.restore();
   }
 
   private drawArenaGrid(state: RenderState): void {
@@ -592,6 +614,11 @@ export class Renderer {
     ctx.save();
     ctx.translate(target.x, target.y);
     ctx.rotate(target.rotation);
+    if (target.premiumArt) {
+      this.drawPremiumTarget(target);
+      ctx.restore();
+      return;
+    }
     const damaged = target.hp < target.maxHp;
     const enemy = target.kind === 'swarmer' || target.kind === 'mine'
       || target.kind === 'splitter' || target.kind === 'splitterFragment';
@@ -727,6 +754,83 @@ export class Renderer {
     ctx.restore();
   }
 
+  private drawPremiumTarget(target: WorldTarget): void {
+    const art = target.premiumArt;
+    if (!art) return;
+    const ctx = this.context;
+    const definition = PREMIUM_ASSETS[art];
+    const image = this.premiumAssets.image(art);
+    const height = definition.renderWidth * definition.imageHeight / definition.imageWidth;
+    const primedFuel = art === 'fuelDepot' && target.primed;
+    const interceptorCracked = art === 'alienInterceptor' && target.hp < target.maxHp;
+    const flash = Math.max(target.impactFlash, primedFuel ? 0.34 + Math.sin(target.age * 29) * 0.28 : 0);
+
+    ctx.save();
+    if (image) {
+      ctx.shadowColor = primedFuel ? '#FF8D24' : definition.palette[1];
+      ctx.shadowBlur = this.renderQuality < 0.8 ? 0 : 5 + flash * 12;
+      ctx.drawImage(image, -definition.renderWidth / 2, -height / 2, definition.renderWidth, height);
+      if (flash > 0.02) {
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = clamp(flash * (primedFuel ? 0.64 : 0.42), 0, 0.72);
+        ctx.drawImage(image, -definition.renderWidth / 2, -height / 2, definition.renderWidth, height);
+      }
+    } else {
+      this.drawPremiumFallback(art, definition.renderWidth, height, target.age, primedFuel);
+    }
+
+    if (primedFuel) {
+      const pulse = 0.5 + Math.sin(target.age * 29) * 0.22;
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = 0.34 + pulse * 0.3;
+      ctx.fillStyle = '#FFF6D7';
+      ctx.beginPath(); ctx.arc(0, 0, 8 + pulse * 6, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#FF7B23';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.arc(0, 0, 31 + pulse * 8, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (interceptorCracked) {
+      ctx.globalCompositeOperation = 'screen';
+      ctx.strokeStyle = COLORS.blue;
+      ctx.globalAlpha = 0.78;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(-4, -16); ctx.lineTo(2, -7); ctx.lineTo(-3, 2); ctx.lineTo(5, 13); ctx.stroke();
+      ctx.fillStyle = '#FF6A22';
+      ctx.beginPath(); ctx.ellipse(0, 2, 5, 9, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawPremiumFallback(
+    art: PremiumArtKind,
+    width: number,
+    height: number,
+    age: number,
+    primed: boolean,
+  ): void {
+    const ctx = this.context;
+    const color = premiumFallbackColor(art);
+    ctx.fillStyle = '#202A32';
+    ctx.strokeStyle = primed ? COLORS.ivory : color;
+    ctx.lineWidth = 2;
+    if (art === 'fuelDepot') {
+      for (let index = 0; index < 6; index += 1) {
+        const angle = index / 6 * Math.PI * 2;
+        ctx.save(); ctx.rotate(angle); ctx.fillRect(5, -5, width * 0.33, 10); ctx.strokeRect(5, -5, width * 0.33, 10); ctx.restore();
+      }
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    } else if (art === 'alienInterceptor') {
+      ctx.beginPath(); ctx.moveTo(0, -height * 0.5); ctx.lineTo(width * 0.48, height * 0.45); ctx.lineTo(0, height * 0.22); ctx.lineTo(-width * 0.48, height * 0.45); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#FF6A22'; ctx.beginPath(); ctx.ellipse(0, 2, 5, 10, 0, 0, Math.PI * 2); ctx.fill();
+    } else {
+      const panels = art === 'solarPowerStation' ? 4 : 2;
+      for (let index = 0; index < panels; index += 1) {
+        ctx.save(); ctx.rotate(index / panels * Math.PI * 2 + age * 0.08); ctx.fillRect(8, -6, width * 0.35, 12); ctx.strokeRect(8, -6, width * 0.35, 12); ctx.restore();
+      }
+      ctx.beginPath(); ctx.arc(0, 0, width * 0.18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+
   private drawBoss(boss: BossState, phaseTime: number, effects: EffectsSystem): void {
     if (!boss.active && !boss.destroyed) return;
     const ctx = this.context;
@@ -751,15 +855,16 @@ export class Renderer {
     ctx.setLineDash([]);
     ctx.globalAlpha = destructionFade;
 
-    if (this.mothershipImage.complete && this.mothershipImage.naturalWidth > 0) {
+    const mothershipImage = this.premiumAssets.image('mothership');
+    if (mothershipImage) {
       ctx.drawImage(
-        this.mothershipImage,
+        mothershipImage,
         -MOTHERSHIP.renderWidth / 2,
         -MOTHERSHIP.renderHeight / 2,
         MOTHERSHIP.renderWidth,
         MOTHERSHIP.renderHeight,
       );
-    }
+    } else this.drawMothershipFallback();
 
     if (boss.flash > 0 || boss.phase >= 2 || boss.destroyed) {
       const unstable = boss.destroyed
@@ -792,6 +897,49 @@ export class Renderer {
       this.drawTargetBrackets(weakPoint.offsetX, weakPoint.offsetY, radius);
     });
 
+    if (boss.phase > 0 || boss.flash > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      for (const weakPoint of boss.weakPoints) {
+        const damage = weakPoint.active ? clamp(1 - weakPoint.hp / weakPoint.maxHp, 0, 1) : 1;
+        if (damage <= 0) continue;
+        const breach = ctx.createRadialGradient(
+          weakPoint.offsetX,
+          weakPoint.offsetY,
+          1,
+          weakPoint.offsetX,
+          weakPoint.offsetY,
+          24 + damage * 15,
+        );
+        breach.addColorStop(0, `rgba(243, 231, 206, ${0.18 + damage * 0.32})`);
+        breach.addColorStop(0.25, `rgba(255, 116, 35, ${0.2 + damage * 0.34})`);
+        breach.addColorStop(1, 'rgba(255, 78, 61, 0)');
+        ctx.fillStyle = breach;
+        ctx.fillRect(weakPoint.offsetX - 42, weakPoint.offsetY - 42, 84, 84);
+      }
+      ctx.restore();
+
+      ctx.save();
+      ctx.strokeStyle = boss.phase >= 2 ? COLORS.coral : COLORS.amber;
+      ctx.lineWidth = 1.3;
+      ctx.globalAlpha = 0.34 + boss.phase * 0.11;
+      const scars = [
+        [-128, 14, -91, 38, -66, 25],
+        [104, -66, 133, -42, 118, -10],
+        [-28, 88, 2, 111, 29, 92],
+      ] as const;
+      for (let index = 0; index < boss.phase; index += 1) {
+        const scar = scars[index];
+        if (!scar) continue;
+        ctx.beginPath();
+        ctx.moveTo(scar[0], scar[1]);
+        ctx.lineTo(scar[2], scar[3]);
+        ctx.lineTo(scar[4], scar[5]);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     if (boss.phase >= 2 && !boss.destroyed && Math.floor(phaseTime * 7) % 3 !== 0) {
       const left = boss.weakPoints[0];
       const center = boss.weakPoints[1];
@@ -814,6 +962,23 @@ export class Renderer {
     }
     ctx.restore();
     this.drawHullFragments(effects);
+  }
+
+  private drawMothershipFallback(): void {
+    const ctx = this.context;
+    ctx.fillStyle = '#18232D';
+    ctx.strokeStyle = COLORS.blue;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(0, -MOTHERSHIP.renderHeight * 0.48);
+    ctx.lineTo(MOTHERSHIP.renderWidth * 0.48, 48);
+    ctx.lineTo(MOTHERSHIP.renderWidth * 0.32, MOTHERSHIP.renderHeight * 0.44);
+    ctx.lineTo(0, MOTHERSHIP.renderHeight * 0.28);
+    ctx.lineTo(-MOTHERSHIP.renderWidth * 0.32, MOTHERSHIP.renderHeight * 0.44);
+    ctx.lineTo(-MOTHERSHIP.renderWidth * 0.48, 48);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
   }
 
   private drawTargetBrackets(x: number, y: number, radius: number): void {
@@ -875,7 +1040,8 @@ export class Renderer {
   }
 
   private drawHullFragments(effects: EffectsSystem): void {
-    if (!this.mothershipImage.complete || this.mothershipImage.naturalWidth <= 0) return;
+    const mothershipImage = this.premiumAssets.image('mothership');
+    if (!mothershipImage) return;
     const ctx = this.context;
     for (const fragment of effects.hullFragments) {
       if (!fragment.active) continue;
@@ -884,7 +1050,7 @@ export class Renderer {
       ctx.rotate(fragment.rotation);
       ctx.globalAlpha = clamp(fragment.life / Math.min(fragment.maxLife, 0.7), 0, 1);
       ctx.drawImage(
-        this.mothershipImage,
+        mothershipImage,
         fragment.sourceX,
         fragment.sourceY,
         fragment.sourceWidth,
@@ -894,6 +1060,39 @@ export class Renderer {
         fragment.width,
         fragment.height,
       );
+      ctx.restore();
+    }
+  }
+
+  private drawPremiumFragments(effects: EffectsSystem): void {
+    const ctx = this.context;
+    for (const fragment of effects.premiumFragments) {
+      if (!fragment.active) continue;
+      const image = this.premiumAssets.image(fragment.art as PremiumAssetKey);
+      ctx.save();
+      ctx.translate(fragment.x, fragment.y);
+      ctx.rotate(fragment.rotation);
+      ctx.globalAlpha = clamp(fragment.life / Math.min(fragment.maxLife, 0.48), 0, 1);
+      if (fragment.glow > 0.02) {
+        ctx.shadowColor = PREMIUM_ASSETS[fragment.art].palette[1];
+        ctx.shadowBlur = this.renderQuality < 0.8 ? 0 : fragment.glow * 9;
+      }
+      if (image) {
+        ctx.drawImage(
+          image,
+          fragment.sourceX,
+          fragment.sourceY,
+          fragment.sourceWidth,
+          fragment.sourceHeight,
+          -fragment.width / 2,
+          -fragment.height / 2,
+          fragment.width,
+          fragment.height,
+        );
+      } else {
+        ctx.fillStyle = premiumFallbackColor(fragment.art);
+        ctx.fillRect(-fragment.width / 2, -fragment.height / 2, fragment.width, fragment.height);
+      }
       ctx.restore();
     }
   }
@@ -1064,7 +1263,13 @@ export class Renderer {
       ctx.globalAlpha = clamp(particle.life / particle.maxLife, 0, 1);
       ctx.fillStyle = particle.color;
       const speed = Math.hypot(particle.vx, particle.vy);
-      if (speed > 120) {
+      if (particle.visual === 'wisp') {
+        const alpha = clamp(particle.life / particle.maxLife, 0, 1);
+        ctx.globalAlpha = alpha * 0.38;
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.size * (1.25 + (1 - alpha)), 0, Math.PI * 2);
+        ctx.fill();
+      } else if (speed > 120) {
         const length = clamp(speed * 0.025, particle.size, particle.size * 3.8);
         const angle = Math.atan2(particle.vy, particle.vx);
         ctx.save();
