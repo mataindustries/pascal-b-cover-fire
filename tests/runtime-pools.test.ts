@@ -53,9 +53,19 @@ describe('orbital runtime pools', () => {
 
   it('bounds recognizable premium wreckage and cancels staged breakup on replay', () => {
     const effects = new EffectsSystem();
-    for (let index = 0; index < 20; index += 1) {
+    const arts = [
+      'hunterDrone',
+      'antimatterReactorPod',
+      'shieldedCargoDrone',
+      'luxurySpaceYacht',
+      'orbitalDatacenter',
+      'crownDroneCarrier',
+      'solarPowerStation',
+      'observationModule',
+    ] as const;
+    for (let index = 0; index < 32; index += 1) {
       effects.premiumDestruction(
-        index % 2 === 0 ? 'solarPowerStation' : 'observationModule',
+        arts[index % arts.length] ?? 'hunterDrone',
         225,
         400,
         index * 0.1,
@@ -67,6 +77,8 @@ describe('orbital runtime pools', () => {
     expect(effects.activePremiumFragmentCount()).toBe(TUNING.maxPremiumFragments);
     expect(effects.premiumDestructionCues.filter((cue) => cue.active).length)
       .toBeLessThanOrEqual(TUNING.maxPremiumDestructionCues);
+    expect(effects.particles.filter((particle) => particle.active).length).toBeLessThanOrEqual(TUNING.maxParticles);
+    expect(effects.shockwaves.filter((wave) => wave.active).length).toBeLessThanOrEqual(TUNING.maxShockwaves);
 
     effects.clear();
     effects.update(1);

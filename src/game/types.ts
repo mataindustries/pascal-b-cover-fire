@@ -17,7 +17,13 @@ export type PremiumArtKind =
   | 'fuelDepot'
   | 'solarPowerStation'
   | 'observationModule'
-  | 'alienInterceptor';
+  | 'alienInterceptor'
+  | 'hunterDrone'
+  | 'antimatterReactorPod'
+  | 'shieldedCargoDrone'
+  | 'luxurySpaceYacht'
+  | 'orbitalDatacenter'
+  | 'crownDroneCarrier';
 export type TargetKind =
   | 'balloon'
   | 'instrument'
@@ -28,9 +34,12 @@ export type TargetKind =
   | 'swarmer'
   | 'mine'
   | 'splitter'
-  | 'splitterFragment';
+  | 'splitterFragment'
+  | 'yacht'
+  | 'datacenter'
+  | 'carrier';
 export type FormationKind = 'wedge' | 'arc' | 'ring' | 'spiral' | 'minefield' | 'splitter' | 'mixed';
-export type DamageSource = 'cover' | 'halo' | 'shockwave' | 'burst' | 'mine';
+export type DamageSource = 'cover' | 'halo' | 'shockwave' | 'burst' | 'mine' | 'data';
 export type HaloTier = 0 | 1 | 2 | 3 | 4;
 export type ExplosionTier = 'spark' | 'burst' | 'cascade' | 'catastrophe';
 
@@ -77,6 +86,10 @@ export interface WorldTarget extends Vec2 {
   contactDamage: number;
   premiumArt: PremiumArtKind | null;
   impactFlash: number;
+  damageMask: number;
+  launchTimer: number;
+  launchedCount: number;
+  carrierLaunched: boolean;
   active: boolean;
 }
 
@@ -211,6 +224,7 @@ export interface PremiumDestructionCue extends Vec2 {
   inheritedVy: number;
   seed: number;
   delay: number;
+  sequenceStep: number;
 }
 
 export interface Shockwave extends Vec2 {
@@ -282,6 +296,8 @@ export interface DebugSnapshot {
   shockwaves: number;
   hullFragments: number;
   premiumTargets: number;
+  texturedTargets: number;
+  premiumTypesSeen: number;
   premiumFragments: number;
   premiumAssetsLoaded: number;
   premiumAssetFailures: number;
@@ -300,4 +316,5 @@ export interface DebugSnapshot {
   comboTimer: number;
   maximumMass: number;
   bossDestructionTime: number;
+  carrierDrones: number;
 }

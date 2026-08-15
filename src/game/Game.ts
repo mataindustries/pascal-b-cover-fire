@@ -27,7 +27,13 @@ import {
 import { clamp, magnitude, normalize, sweptCircleHit } from './math';
 import { Renderer } from './render/Renderer';
 import { PremiumAssetStore } from './assets/PremiumAssetStore';
-import { PREMIUM_ASSETS } from './assets/premium';
+import {
+  PREMIUM_ART_KINDS,
+  PREMIUM_ASSETS,
+  isPrestigeArt,
+  prestigeSubsystemCount,
+  targetVisualArt,
+} from './assets/premium';
 import { AudioManager } from './systems/AudioManager';
 import { ChainSystem } from './systems/ChainSystem';
 import { EffectsSystem } from './systems/EffectsSystem';
@@ -64,6 +70,12 @@ interface DebugApi {
   coreBurst(): void;
   spawnFormation(kind: FormationKind): void;
   spawnPremium(art: PremiumArtKind): void;
+  premiumGallery(damaged?: boolean): void;
+  focusPremium(art: PremiumArtKind): void;
+  nextPremium(): void;
+  damagePremium(): void;
+  destroyPremium(): void;
+  carrierIncursion(): void;
   snapshot(): DebugSnapshot & {
     score: number;
     mass: number;
@@ -183,6 +195,8 @@ export class Game {
   private lowFrameTime = 0;
   private cosmeticQuality = 1;
   private premiumAssetsReady = false;
+  private debugPremiumCursor = 0;
+  private debugPremiumFocusId = 0;
 
   public constructor(app: HTMLElement) {
     this.persisted = loadPersistedState();
@@ -208,6 +222,12 @@ export class Game {
       coreBurst: () => this.activateCoreBurst(),
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
       fillBurst: () => this.debugFillBurst(),
+      premiumGallery: () => this.debugPremiumGallery(false),
+      premiumGalleryDamage: () => this.debugPremiumGallery(true),
+      nextPremium: () => this.debugNextPremium(),
+      damagePremium: () => this.debugDamagePremium(),
+      destroyPremium: () => this.debugDestroyPremium(),
+      carrierIncursion: () => this.debugCarrierIncursion(),
     }, this.debugEnabled);
     this.renderer = new Renderer(this.ui.canvas, this.premiumAssets);
     this.input = new InputManager(this.ui.canvas, {
@@ -370,6 +390,13 @@ export class Game {
   }
 
   private updateOrbit(delta: number): void {
+    if (this.world.galleryMode) {
+      this.player.vx = 0;
+      this.player.vy = 0;
+      this.chains.update(delta);
+      this.world.update(delta, 'orbit', this.player, this.phaseTime, this.overdrive.value);
+      return;
+    }
     this.updateOrbitalPhysics(delta);
     this.chains.update(delta);
     this.world.update(delta, 'orbit', this.player, this.phaseTime, this.overdrive.value);
@@ -456,10 +483,15 @@ export class Game {
     }
     const minimumSpeed = TUNING.playerMinOrbitSpeed * (1 + this.overdrive.value * 0.08);
     if (speed < minimumSpeed) {
-      const recovery = Math.min(1, delta * 0.7);
-      const scale = 1 + (minimumSpeed / speed - 1) * recovery;
-      player.vx *= scale;
-      player.vy *= scale;
+      if (speed < 0.001) {
+        player.vx = Math.cos(player.rotation) * minimumSpeed;
+        player.vy = Math.sin(player.rotation) * minimumSpeed;
+      } else {
+        const recovery = Math.min(1, delta * 0.7);
+        const scale = 1 + (minimumSpeed / speed - 1) * recovery;
+        player.vx *= scale;
+        player.vy *= scale;
+      }
     }
 
     player.x += player.vx * delta;
@@ -483,6 +515,7 @@ export class Game {
   }
 
   private resolveArenaInteractions(): void {
+    if (this.world.galleryMode) return;
     this.handleTargetCollisions();
     this.handleBurstShardCollisions();
     this.handleGameplayWaveCollisions();
@@ -564,11 +597,12 @@ export class Game {
   ): void {
     if (!target.active) return;
     target.impactFlash = 1;
-    if (target.premiumArt) {
+    const visualArt = targetVisualArt(target.kind, target.premiumArt);
+    if (visualArt) {
       this.effects.premiumImpact(
         target.x,
         target.y,
-        target.premiumArt,
+        visualArt,
         origin ? Math.atan2(target.y - origin.y, target.x - origin.x) : undefined,
       );
     }
@@ -584,12 +618,85 @@ export class Game {
       return;
     }
 
+    if (target.premiumArt && isPrestigeArt(target.premiumArt)) {
+      this.damagePrestigeTarget(target, source, depth, origin);
+      return;
+    }
+
     target.hp -= Math.max(0.1, amount);
     const color = target.kind === 'swarmer' || target.kind === 'splitter' || target.kind === 'splitterFragment'
       ? COLORS.coral
       : COLORS.amber;
     this.effects.burst(target.x, target.y, target.kind === 'splitter' ? 7 : 3, color, 130);
+    if (target.hp > 0 && visualArt === 'shieldedCargoDrone' && target.damageMask === 0) {
+      target.damageMask = 1;
+      this.effects.premiumSubsystemBreak(
+        visualArt,
+        0,
+        target.x,
+        target.y,
+        target.rotation,
+        target.vx,
+        target.vy,
+        target.id,
+      );
+    }
     if (target.hp <= 0) this.destroyTarget(target, source, depth, origin);
+  }
+
+  private damagePrestigeTarget(
+    target: WorldTarget,
+    source: DamageSource,
+    depth: number,
+    origin?: Vec2,
+  ): void {
+    const art = target.premiumArt;
+    if (!art) return;
+    if (target.hp <= 1) {
+      target.hp = 0;
+      this.destroyTarget(target, source, depth, origin);
+      return;
+    }
+    const subsystemIndex = this.selectPrestigeSubsystem(target, art, origin);
+    target.damageMask |= 1 << subsystemIndex;
+    target.hp = Math.max(1, target.hp - 1);
+    this.effects.premiumSubsystemBreak(
+      art,
+      subsystemIndex,
+      target.x,
+      target.y,
+      target.rotation,
+      target.vx,
+      target.vy,
+      target.id + target.damageMask * 13,
+    );
+    const waveRadius = art === 'orbitalDatacenter' ? 82 : art === 'crownDroneCarrier' ? 74 : 66;
+    if (inArenaPhase(this.phase) && depth < 5) {
+      this.chains.emitWave(target.x, target.y, waveRadius, 0.72, depth + 1, 'shockwave');
+    }
+    this.score += Math.round(180 * overdriveScoreMultiplier(this.overdrive.value));
+    this.audio.impact(2);
+  }
+
+  private selectPrestigeSubsystem(target: WorldTarget, art: PremiumArtKind, origin?: Vec2): number {
+    const count = prestigeSubsystemCount(art);
+    if (count <= 0) return 0;
+    let preferred = 0;
+    if (art === 'crownDroneCarrier') {
+      const baysIntact = (target.damageMask & 0b11) !== 0b11;
+      const leftSide = (origin?.x ?? target.x - 1) < target.x;
+      preferred = baysIntact ? (leftSide ? 0 : 1) : (leftSide ? 2 : 3);
+    } else if (origin) {
+      const localAngle = Math.atan2(origin.y - target.y, origin.x - target.x) - target.rotation;
+      preferred = Math.floor(((localAngle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2) * count) % count;
+    } else {
+      preferred = target.id % count;
+    }
+    for (let offset = 0; offset < count; offset += 1) {
+      const candidate = (preferred + offset) % count;
+      if ((target.damageMask & (1 << candidate)) === 0) return candidate;
+    }
+    return 0;
   }
 
   private destroyTarget(target: WorldTarget, source: DamageSource, depth: number, origin?: Vec2): void {
@@ -599,10 +706,12 @@ export class Game {
     const y = target.y;
     const wasSplitter = kind === 'splitter';
     const premiumArt = target.premiumArt;
+    const visualArt = targetVisualArt(kind, premiumArt);
     const rotation = target.rotation;
     const inheritedVx = target.vx;
     const inheritedVy = target.vy;
     const targetId = target.id;
+    const damageMask = target.damageMask;
     target.active = false;
 
     this.combo = registerComboHit(this.combo, TUNING.comboWindow);
@@ -610,7 +719,8 @@ export class Game {
     const arena = inArenaPhase(this.phase);
     const points = impactScore(target.score, this.combo.count, this.halo.mass)
       * overdriveScoreMultiplier(this.overdrive.value);
-    this.score += Math.round(points);
+    const awardedPoints = Math.round(points);
+    this.score += awardedPoints;
 
     if (arena) {
       const previousTier = this.halo.tier();
@@ -646,31 +756,51 @@ export class Game {
       : kind === 'swarmer' || kind === 'splitter' || kind === 'splitterFragment'
         ? COLORS.coral
         : COLORS.blue;
-    this.effects.explosion(x, y, explosionTier, color, Math.atan2(this.player.vy, this.player.vx));
-    if (premiumArt) {
-      const palette = PREMIUM_ASSETS[premiumArt].palette;
+    if (!visualArt || kind === 'splitterFragment') {
+      this.effects.explosion(x, y, explosionTier, color, Math.atan2(this.player.vy, this.player.vx));
+    }
+    if (visualArt && kind !== 'splitterFragment') {
+      const palette = PREMIUM_ASSETS[visualArt].palette;
       this.effects.premiumDestruction(
-        premiumArt,
+        visualArt,
         x,
         y,
         rotation,
         inheritedVx,
         inheritedVy,
         targetId,
+        damageMask,
       );
-      if (premiumArt === 'goldTelescope' || premiumArt === 'observationModule') {
+      if (visualArt === 'goldTelescope' || visualArt === 'observationModule') {
         this.effects.burst(x, y, 10, palette[0], 300);
         this.effects.burst(x, y, 8, palette[2], 235);
       }
     }
-    if (origin && (source === 'shockwave' || source === 'burst' || source === 'mine')) {
-      this.effects.link(origin.x, origin.y, x, y, source === 'burst' ? COLORS.blue : COLORS.amber);
+    if (premiumArt === 'luxurySpaceYacht') {
+      this.effects.label(`PRESTIGE LOSS // +${awardedPoints}`, x, y - 46, '#F6D98C', 0.92);
+      this.ui.announce('LUXURY YACHT // PRESTIGE JACKPOT', 'victory');
+    } else if (premiumArt === 'orbitalDatacenter') {
+      this.effects.label('COMPUTE LOSS', x, y - 48, '#72E9FF', 0.94);
+      this.ui.announce('DATAVAULT BREACH // DATA COLLAPSE', 'warning');
+    } else if (premiumArt === 'crownDroneCarrier') {
+      this.effects.label('CARRIER NEUTRALIZED', x, y - 52, '#FFB36A', 0.98);
+      this.ui.announce('CARRIER INCURSION TERMINATED', 'victory');
+    }
+    if (origin && (source === 'shockwave' || source === 'burst' || source === 'mine' || source === 'data')) {
+      const linkColor = source === 'burst' || source === 'data' ? COLORS.blue : COLORS.amber;
+      this.effects.link(origin.x, origin.y, x, y, linkColor);
     }
     this.audio.chainTick(this.combo.count, kind === 'mine');
 
     if (arena) {
       const radius = premiumArt === 'fuelDepot'
         ? 144
+        : premiumArt === 'orbitalDatacenter'
+          ? 176
+          : premiumArt === 'crownDroneCarrier'
+            ? 158
+            : premiumArt === 'luxurySpaceYacht'
+              ? 126
         : premiumArt === 'solarPowerStation'
           ? 112
           : premiumArt === 'goldTelescope' || premiumArt === 'observationModule'
@@ -678,6 +808,12 @@ export class Game {
             : shockwaveRadius(kind, this.combo.count);
       const damage = premiumArt === 'fuelDepot'
         ? 1.25
+        : premiumArt === 'orbitalDatacenter'
+          ? 1.2
+          : premiumArt === 'crownDroneCarrier'
+            ? 1.15
+            : premiumArt === 'luxurySpaceYacht'
+              ? 1.05
         : premiumArt === 'solarPowerStation'
           ? 1.05
           : premiumArt === 'goldTelescope' || premiumArt === 'observationModule'
@@ -690,7 +826,9 @@ export class Game {
           radius,
           damage,
           depth,
-          kind === 'mine' || premiumArt === 'fuelDepot' ? 'mine' : 'shockwave',
+          premiumArt === 'orbitalDatacenter'
+            ? 'data'
+            : kind === 'mine' || premiumArt === 'fuelDepot' ? 'mine' : 'shockwave',
         );
       }
       const milestone = chainMilestone(this.combo.count);
@@ -721,7 +859,8 @@ export class Game {
 
   private applyDirectContact(target: WorldTarget): void {
     const away = normalize(this.player.x - target.x, this.player.y - target.y || 1);
-    const heavy = target.kind === 'mine' || target.kind === 'splitter';
+    const heavy = target.kind === 'mine' || target.kind === 'splitter'
+      || target.kind === 'yacht' || target.kind === 'datacenter' || target.kind === 'carrier';
     this.player.vx += away.x * (heavy ? 42 : 16);
     if (this.phase !== 'ascent') this.player.vy += away.y * (heavy ? 42 : 16);
     if (target.contactDamage > 0 && target.kind !== 'mine') {
@@ -941,16 +1080,20 @@ export class Game {
     for (let index = 0; index < Math.min(10, finalEscorts.length); index += 1) {
       const escort = finalEscorts[index];
       if (!escort) continue;
-      this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
-      if (escort.premiumArt) {
+      const visualArt = targetVisualArt(escort.kind, escort.premiumArt);
+      if (!visualArt || escort.kind === 'splitterFragment') {
+        this.effects.explosion(escort.x, escort.y, escort.kind === 'mine' ? 'cascade' : 'spark', COLORS.coral);
+      }
+      if (visualArt && escort.kind !== 'splitterFragment') {
         this.effects.premiumDestruction(
-          escort.premiumArt,
+          visualArt,
           escort.x,
           escort.y,
           escort.rotation,
           escort.vx,
           escort.vy,
           escort.id,
+          escort.damageMask,
         );
       }
     }
@@ -1151,6 +1294,7 @@ export class Game {
     this.bossEndTimer = 0;
     this.chargeAuthorizationStage = 0;
     this.maximumHaloTier = 0;
+    this.debugPremiumFocusId = 0;
     this.paused = false;
     this.accumulator = 0;
     this.input.reset();
@@ -1347,6 +1491,7 @@ export class Game {
   private debugSpawnFormation(kind: FormationKind): void {
     if (!this.debugEnabled) return;
     this.debugJumpToOrbit();
+    this.world.leaveGallery();
     if (inArenaPhase(this.phase)) this.world.spawnFormation(kind, this.player, 0.12);
   }
 
@@ -1354,12 +1499,99 @@ export class Game {
     if (!this.debugEnabled) return;
     this.debugJumpToOrbit();
     if (inArenaPhase(this.phase)) {
+      this.world.leaveGallery();
       this.world.spawnPremiumTargetForTest(
         art,
         clamp(this.player.x + 82, 46, STAGE.width - 46),
         clamp(this.player.y - 126, STAGE.hudTop + 48, TUNING.playerArenaBottom - 48),
       );
     }
+  }
+
+  private debugPremiumGallery(damaged: boolean): void {
+    if (!this.debugEnabled) return;
+    this.debugJumpToOrbit();
+    this.effects.clear();
+    this.chains.reset();
+    this.halo.reset();
+    this.player.x = STAGE.width / 2;
+    this.player.y = TUNING.playerArenaBottom;
+    this.player.previousX = this.player.x;
+    this.player.previousY = this.player.y;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.rotation = 0;
+    this.debugPremiumFocusId = 0;
+    this.world.spawnPremiumGallery(damaged);
+    this.ui.announce(damaged ? 'PREMIUM ROSTER // DAMAGE STATES' : 'PREMIUM ROSTER // 12 ASSETS');
+  }
+
+  private debugFocusPremium(art: PremiumArtKind): void {
+    if (!this.debugEnabled) return;
+    this.debugJumpToOrbit();
+    this.effects.clear();
+    this.chains.reset();
+    this.halo.reset();
+    this.player.x = STAGE.width / 2;
+    this.player.y = TUNING.playerArenaBottom;
+    this.player.previousX = this.player.x;
+    this.player.previousY = this.player.y;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.rotation = 0;
+    const target = this.world.spawnPremiumFocus(art);
+    this.debugPremiumFocusId = target?.id ?? 0;
+    this.ui.announce(`PREMIUM CYCLE // ${PREMIUM_ASSETS[art].label}`);
+  }
+
+  private debugNextPremium(): void {
+    const art = PREMIUM_ART_KINDS[this.debugPremiumCursor % PREMIUM_ART_KINDS.length];
+    this.debugPremiumCursor += 1;
+    if (art) this.debugFocusPremium(art);
+  }
+
+  private debugDamagePremium(): void {
+    if (!this.debugEnabled) return;
+    const target = this.world.targets.find((candidate) => candidate.active && candidate.id === this.debugPremiumFocusId);
+    if (!target) {
+      this.world.setPremiumGalleryDamageState();
+      return;
+    }
+    if ((target.premiumArt && isPrestigeArt(target.premiumArt)) || target.kind === 'splitter') {
+      this.damageTarget(target, 1, 'cover', 0, { x: target.x - 60, y: target.y });
+    } else {
+      this.world.setPremiumGalleryDamageState();
+    }
+  }
+
+  private debugDestroyPremium(): void {
+    if (!this.debugEnabled) return;
+    const target = this.world.targets.find((candidate) => candidate.active && candidate.id === this.debugPremiumFocusId)
+      ?? this.world.targets.find((candidate) => candidate.active && candidate.premiumArt !== null);
+    if (!target) return;
+    this.destroyTarget(target, target.premiumArt === 'orbitalDatacenter' ? 'data' : 'cover', 0);
+  }
+
+  private debugCarrierIncursion(): void {
+    if (!this.debugEnabled) return;
+    this.debugJumpToOrbit();
+    this.effects.clear();
+    this.chains.reset();
+    this.halo.reset();
+    const carrier = this.world.spawnPremiumFocus('crownDroneCarrier');
+    if (!carrier) return;
+    carrier.y = 258;
+    carrier.launchTimer = 0.22;
+    this.debugPremiumFocusId = carrier.id;
+    this.world.leaveGallery();
+    this.player.x = 68;
+    this.player.y = 640;
+    this.player.previousX = this.player.x;
+    this.player.previousY = this.player.y;
+    this.player.vx = 272;
+    this.player.vy = 0;
+    this.player.rotation = 0;
+    this.ui.announce('CARRIER INCURSION // LAUNCH BAYS ACTIVE', 'warning');
   }
 
   private debugFillBurst(): void {
@@ -1409,6 +1641,8 @@ export class Game {
       shockwaves: this.effects.shockwaves.reduce((count, wave) => count + (wave.active ? 1 : 0), 0),
       hullFragments: this.effects.activeHullFragmentCount(),
       premiumTargets: this.world.activePremiumCount(),
+      texturedTargets: this.world.activeTexturedCount(),
+      premiumTypesSeen: this.world.premiumTypesSeenCount(),
       premiumFragments: this.effects.activePremiumFragmentCount(),
       premiumAssetsLoaded: this.premiumAssets.report().loaded,
       premiumAssetFailures: this.premiumAssets.report().failed,
@@ -1427,6 +1661,7 @@ export class Game {
       comboTimer: this.combo.timer,
       maximumMass: TUNING.haloMassCapacity,
       bossDestructionTime: this.boss.destructionTime,
+      carrierDrones: this.world.activeCarrierDroneCount(),
     };
   }
 
@@ -1443,6 +1678,12 @@ export class Game {
       coreBurst: () => this.activateCoreBurst(),
       spawnFormation: (kind) => this.debugSpawnFormation(kind),
       spawnPremium: (art) => this.debugSpawnPremium(art),
+      premiumGallery: (damaged = false) => this.debugPremiumGallery(damaged),
+      focusPremium: (art) => this.debugFocusPremium(art),
+      nextPremium: () => this.debugNextPremium(),
+      damagePremium: () => this.debugDamagePremium(),
+      destroyPremium: () => this.debugDestroyPremium(),
+      carrierIncursion: () => this.debugCarrierIncursion(),
       snapshot: () => ({
         ...this.debugSnapshot(),
         score: this.score,

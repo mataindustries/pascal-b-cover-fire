@@ -1,5 +1,10 @@
 import { COLORS, MOTHERSHIP, STAGE, TUNING } from '../config';
-import { PREMIUM_ASSETS, premiumFallbackColor, type PremiumAssetKey } from '../assets/premium';
+import {
+  PREMIUM_ASSETS,
+  premiumFallbackColor,
+  targetVisualArt,
+  type PremiumAssetKey,
+} from '../assets/premium';
 import type { PremiumAssetStore } from '../assets/PremiumAssetStore';
 import { clamp, seededNoise, smoothstep } from '../math';
 import type { BossState, GamePhase, PlayerState, PremiumArtKind, Vec2, WorldTarget } from '../types';
@@ -115,7 +120,10 @@ export class Renderer {
       for (const target of state.world.targets) {
         if (!target.active) continue;
         if (target.telegraph > 0) this.drawPortalTelegraph(target, state.phaseTime);
-        else this.drawTarget(target);
+        else {
+          this.drawTarget(target);
+          if (state.world.galleryMode && target.premiumArt) this.drawPremiumGalleryLabel(target);
+        }
       }
     }
     if (state.phase === 'boss') this.drawBoss(state.boss, state.phaseTime, state.effects);
@@ -606,6 +614,17 @@ export class Renderer {
       ctx.lineTo(Math.cos(angle) * 34, Math.sin(angle) * 34);
       ctx.stroke();
     }
+    if (target.kind === 'carrier' || target.kind === 'datacenter' || target.kind === 'yacht') {
+      ctx.rotate(-target.rotation);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.82;
+      ctx.font = '800 8px monospace';
+      ctx.textAlign = 'center';
+      const label = target.kind === 'carrier'
+        ? 'CARRIER INCURSION'
+        : target.kind === 'datacenter' ? 'DATAVAULT CONTACT' : 'PRESTIGE CONTACT';
+      ctx.fillText(label, 0, 45);
+    }
     ctx.restore();
   }
 
@@ -614,8 +633,9 @@ export class Renderer {
     ctx.save();
     ctx.translate(target.x, target.y);
     ctx.rotate(target.rotation);
-    if (target.premiumArt) {
-      this.drawPremiumTarget(target);
+    const visualArt = targetVisualArt(target.kind, target.premiumArt);
+    if (visualArt) {
+      this.drawPremiumTarget(target, visualArt);
       ctx.restore();
       return;
     }
@@ -754,19 +774,49 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawPremiumTarget(target: WorldTarget): void {
+  private drawPremiumGalleryLabel(target: WorldTarget): void {
     const art = target.premiumArt;
     if (!art) return;
+    const definition = PREMIUM_ASSETS[art];
+    const height = definition.renderWidth * definition.imageHeight / definition.imageWidth;
+    const ctx = this.context;
+    ctx.save();
+    ctx.fillStyle = definition.palette[0];
+    ctx.globalAlpha = 0.82;
+    ctx.font = '800 6.5px monospace';
+    ctx.textAlign = 'center';
+    const label = definition.label.length > 22 ? definition.label.replace(' ', '\n') : definition.label;
+    const lines = label.split('\n');
+    lines.forEach((line, index) => ctx.fillText(line, target.x, target.y + height * 0.5 + 12 + index * 8));
+    ctx.restore();
+  }
+
+  private drawPremiumTarget(target: WorldTarget, art: PremiumArtKind): void {
     const ctx = this.context;
     const definition = PREMIUM_ASSETS[art];
     const image = this.premiumAssets.image(art);
     const height = definition.renderWidth * definition.imageHeight / definition.imageWidth;
-    const primedFuel = art === 'fuelDepot' && target.primed;
-    const interceptorCracked = art === 'alienInterceptor' && target.hp < target.maxHp;
+    const primedFuel = (art === 'fuelDepot' || art === 'antimatterReactorPod') && target.primed;
+    const interceptorCracked = (art === 'alienInterceptor' || art === 'shieldedCargoDrone')
+      && target.hp < target.maxHp;
     const flash = Math.max(target.impactFlash, primedFuel ? 0.34 + Math.sin(target.age * 29) * 0.28 : 0);
 
     ctx.save();
-    if (image) {
+    if (image && target.kind === 'splitterFragment') {
+      const lobes = definition.fragments.filter((fragment) => fragment.stage === 'detached');
+      const lobe = lobes[target.id % Math.max(1, Math.min(4, lobes.length))];
+      if (lobe) {
+        const sourceX = Math.round(lobe.x * definition.imageWidth);
+        const sourceY = Math.round(lobe.y * definition.imageHeight);
+        const sourceWidth = Math.max(1, Math.round(lobe.width * definition.imageWidth));
+        const sourceHeight = Math.max(1, Math.round(lobe.height * definition.imageHeight));
+        const lobeWidth = 17;
+        const lobeHeight = lobeWidth * sourceHeight / sourceWidth;
+        ctx.shadowColor = definition.palette[1];
+        ctx.shadowBlur = this.renderQuality < 0.8 ? 0 : 4;
+        ctx.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, -lobeWidth / 2, -lobeHeight / 2, lobeWidth, lobeHeight);
+      }
+    } else if (image) {
       ctx.shadowColor = primedFuel ? '#FF8D24' : definition.palette[1];
       ctx.shadowBlur = this.renderQuality < 0.8 ? 0 : 5 + flash * 12;
       ctx.drawImage(image, -definition.renderWidth / 2, -height / 2, definition.renderWidth, height);
@@ -798,6 +848,7 @@ export class Renderer {
       ctx.fillStyle = '#FF6A22';
       ctx.beginPath(); ctx.ellipse(0, 2, 5, 9, 0, 0, Math.PI * 2); ctx.fill();
     }
+    this.drawPremiumDamageState(target, art, definition.renderWidth, height);
     ctx.restore();
   }
 
@@ -813,15 +864,57 @@ export class Renderer {
     ctx.fillStyle = '#202A32';
     ctx.strokeStyle = primed ? COLORS.ivory : color;
     ctx.lineWidth = 2;
-    if (art === 'fuelDepot') {
+    if (art === 'fuelDepot' || art === 'antimatterReactorPod') {
       for (let index = 0; index < 6; index += 1) {
         const angle = index / 6 * Math.PI * 2;
-        ctx.save(); ctx.rotate(angle); ctx.fillRect(5, -5, width * 0.33, 10); ctx.strokeRect(5, -5, width * 0.33, 10); ctx.restore();
+        ctx.save();
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.roundRect(5, -5, width * 0.33, 10, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
       ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    } else if (art === 'alienInterceptor') {
+    } else if (art === 'alienInterceptor' || art === 'hunterDrone') {
       ctx.beginPath(); ctx.moveTo(0, -height * 0.5); ctx.lineTo(width * 0.48, height * 0.45); ctx.lineTo(0, height * 0.22); ctx.lineTo(-width * 0.48, height * 0.45); ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#FF6A22'; ctx.beginPath(); ctx.ellipse(0, 2, 5, 10, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (art === 'shieldedCargoDrone') {
+      ctx.beginPath();
+      for (let index = 0; index < 8; index += 1) {
+        const angle = index / 8 * Math.PI * 2;
+        const x = Math.cos(angle) * width * 0.48;
+        const y = Math.sin(angle) * height * 0.48;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = COLORS.blue;
+      for (const angle of [-Math.PI * 0.25, Math.PI * 0.25, Math.PI * 0.75]) {
+        ctx.beginPath(); ctx.arc(Math.cos(angle) * 11, Math.sin(angle) * 11, 5, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (art === 'luxurySpaceYacht') {
+      ctx.beginPath();
+      ctx.moveTo(-width * 0.5, 0);
+      ctx.quadraticCurveTo(-width * 0.16, -height * 0.42, width * 0.5, -height * 0.18);
+      ctx.lineTo(width * 0.42, height * 0.22);
+      ctx.quadraticCurveTo(-width * 0.1, height * 0.34, -width * 0.5, 0);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#D9AB43';
+      ctx.beginPath(); ctx.moveTo(-width * 0.08, 0); ctx.lineTo(width * 0.24, -height * 0.5); ctx.moveTo(width * 0.08, 0); ctx.lineTo(width * 0.36, height * 0.5); ctx.stroke();
+    } else if (art === 'orbitalDatacenter') {
+      for (let index = 0; index < 4; index += 1) {
+        ctx.save(); ctx.rotate(index / 4 * Math.PI * 2); ctx.beginPath(); ctx.roundRect(12, -10, width * 0.34, 20, 4); ctx.fill(); ctx.stroke(); ctx.restore();
+      }
+      ctx.beginPath(); ctx.arc(0, 0, width * 0.18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    } else if (art === 'crownDroneCarrier') {
+      ctx.beginPath();
+      ctx.moveTo(0, -height * 0.46);
+      ctx.bezierCurveTo(width * 0.28, -height * 0.36, width * 0.52, 0, width * 0.42, height * 0.42);
+      ctx.lineTo(0, height * 0.18);
+      ctx.lineTo(-width * 0.42, height * 0.42);
+      ctx.bezierCurveTo(-width * 0.52, 0, -width * 0.28, -height * 0.36, 0, -height * 0.46);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#FF8724'; ctx.beginPath(); ctx.arc(0, -height * 0.04, 8, 0, Math.PI * 2); ctx.fill();
     } else {
       const panels = art === 'solarPowerStation' ? 4 : 2;
       for (let index = 0; index < panels; index += 1) {
@@ -829,6 +922,71 @@ export class Renderer {
       }
       ctx.beginPath(); ctx.arc(0, 0, width * 0.18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     }
+  }
+
+  private drawPremiumDamageState(
+    target: WorldTarget,
+    art: PremiumArtKind,
+    width: number,
+    height: number,
+  ): void {
+    const ctx = this.context;
+    const definition = PREMIUM_ASSETS[art];
+    const anchors = definition.damageAnchors ?? [];
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    for (let index = 0; index < anchors.length; index += 1) {
+      if ((target.damageMask & (1 << index)) === 0) continue;
+      const anchor = anchors[index];
+      if (!anchor) continue;
+      const x = (anchor.x - 0.5) * width;
+      const y = (anchor.y - 0.5) * height;
+      const radius = definition.role === 'prestige' ? 11 : 7;
+      const scorch = ctx.createRadialGradient(x, y, 1, x, y, radius);
+      scorch.addColorStop(0, 'rgba(6, 8, 13, 0.94)');
+      scorch.addColorStop(0.55, 'rgba(24, 29, 33, 0.78)');
+      scorch.addColorStop(1, 'rgba(6, 8, 13, 0)');
+      ctx.fillStyle = scorch;
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = index % 2 === 0 ? definition.palette[1] : definition.palette[2];
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x - radius * 0.8, y - radius * 0.25);
+      ctx.lineTo(x - 2, y + 1);
+      ctx.lineTo(x + radius * 0.55, y - radius * 0.65);
+      ctx.moveTo(x - radius * 0.35, y + radius * 0.72);
+      ctx.lineTo(x + 1, y + 2);
+      ctx.lineTo(x + radius * 0.8, y + radius * 0.3);
+      ctx.stroke();
+    }
+
+    if (art === 'crownDroneCarrier') {
+      for (let bay = 0; bay < 2; bay += 1) {
+        if ((target.damageMask & (1 << bay)) !== 0) continue;
+        const x = bay === 0 ? -width * 0.17 : width * 0.17;
+        const pulse = 0.55 + Math.sin(target.age * 7 + bay * 1.7) * 0.24;
+        ctx.fillStyle = '#2ABEFF';
+        ctx.globalAlpha = pulse;
+        ctx.beginPath(); ctx.ellipse(x, height * 0.08, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = '#FF8724';
+      ctx.globalAlpha = 0.72 + Math.sin(target.age * 8) * 0.18;
+      ctx.beginPath(); ctx.arc(0, -height * 0.04, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    if (art === 'orbitalDatacenter' && target.damageMask !== 0) {
+      ctx.strokeStyle = '#55E7FF';
+      ctx.globalAlpha = 0.58;
+      ctx.lineWidth = 1;
+      const phase = target.age * 17;
+      ctx.beginPath();
+      ctx.moveTo(-7, -5);
+      ctx.lineTo(Math.sin(phase) * 8, -12);
+      ctx.lineTo(Math.cos(phase * 1.3) * 11, 7);
+      ctx.lineTo(8, 13);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private drawBoss(boss: BossState, phaseTime: number, effects: EffectsSystem): void {
@@ -1091,7 +1249,13 @@ export class Renderer {
         );
       } else {
         ctx.fillStyle = premiumFallbackColor(fragment.art);
-        ctx.fillRect(-fragment.width / 2, -fragment.height / 2, fragment.width, fragment.height);
+        ctx.beginPath();
+        ctx.moveTo(-fragment.width * 0.5, -fragment.height * 0.18);
+        ctx.quadraticCurveTo(-fragment.width * 0.08, -fragment.height * 0.58, fragment.width * 0.5, -fragment.height * 0.2);
+        ctx.lineTo(fragment.width * 0.34, fragment.height * 0.42);
+        ctx.quadraticCurveTo(-fragment.width * 0.12, fragment.height * 0.58, -fragment.width * 0.5, -fragment.height * 0.18);
+        ctx.closePath();
+        ctx.fill();
       }
       ctx.restore();
     }
@@ -1128,7 +1292,12 @@ export class Renderer {
       ctx.strokeStyle = color;
       ctx.lineWidth = 0.8;
       if (orbiter.shape === 0) {
-        ctx.fillRect(-orbiter.size, -orbiter.size * 0.22, orbiter.size * 2, orbiter.size * 0.44);
+        ctx.beginPath();
+        ctx.moveTo(-orbiter.size, -orbiter.size * 0.16);
+        ctx.quadraticCurveTo(0, -orbiter.size * 0.42, orbiter.size, -orbiter.size * 0.1);
+        ctx.lineTo(orbiter.size * 0.72, orbiter.size * 0.26);
+        ctx.quadraticCurveTo(-orbiter.size * 0.1, orbiter.size * 0.38, -orbiter.size, -orbiter.size * 0.16);
+        ctx.fill();
       } else if (orbiter.shape === 1) {
         ctx.beginPath(); ctx.arc(0, 0, orbiter.size * 0.58, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       } else {
@@ -1228,8 +1397,10 @@ export class Renderer {
     for (const wave of state.chains.waves) {
       if (!wave.active) continue;
       ctx.globalAlpha = clamp(wave.life / wave.maxLife, 0, 1) * 0.42;
-      ctx.strokeStyle = wave.source === 'burst' ? COLORS.blue : wave.source === 'mine' ? COLORS.amber : COLORS.ivory;
-      ctx.lineWidth = wave.source === 'burst' ? 2.8 : wave.source === 'mine' ? 2.2 : 1.2;
+      ctx.strokeStyle = wave.source === 'burst' || wave.source === 'data'
+        ? COLORS.blue
+        : wave.source === 'mine' ? COLORS.amber : COLORS.ivory;
+      ctx.lineWidth = wave.source === 'burst' ? 2.8 : wave.source === 'data' ? 3.6 : wave.source === 'mine' ? 2.2 : 1.2;
       ctx.beginPath(); ctx.arc(wave.x, wave.y, wave.radius, 0, Math.PI * 2); ctx.stroke();
     }
     for (const shard of state.chains.shards) {
@@ -1275,10 +1446,18 @@ export class Renderer {
         ctx.save();
         ctx.translate(particle.x, particle.y);
         ctx.rotate(angle);
-        ctx.fillRect(-length, -particle.size * 0.35, length, particle.size * 0.7);
+        ctx.strokeStyle = particle.color;
+        ctx.lineWidth = Math.max(0.8, particle.size * 0.55);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-length, 0);
+        ctx.quadraticCurveTo(-length * 0.35, particle.size * 0.22, 0, 0);
+        ctx.stroke();
         ctx.restore();
       } else {
-        ctx.fillRect(particle.x - particle.size * 0.5, particle.y - particle.size * 0.5, particle.size, particle.size);
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, Math.max(0.7, particle.size * 0.42), 0, Math.PI * 2);
+        ctx.fill();
       }
     }
     for (const wave of effects.shockwaves) {

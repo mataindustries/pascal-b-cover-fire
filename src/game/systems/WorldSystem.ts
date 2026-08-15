@@ -1,5 +1,15 @@
 import { STAGE, TUNING } from '../config';
-import { PREMIUM_SPAWN_SEQUENCE, premiumGameplayKind } from '../assets/premium';
+import {
+  PREMIUM_AMBIENT_KINDS,
+  PREMIUM_ART_KINDS,
+  PREMIUM_ASSETS,
+  PREMIUM_PRESTIGE_KINDS,
+  isPrestigeArt,
+  premiumGameplayKind,
+  prestigeSubsystemCount,
+  targetVisualArt,
+} from '../assets/premium';
+import { PremiumShuffleBag } from '../logic/premiumRoster';
 import { clamp, seededNoise } from '../math';
 import type {
   FlightPhase,
@@ -30,10 +40,14 @@ const PROFILES: Record<TargetKind, TargetProfile> = {
   mine: { radius: 17, hp: 1, mass: 1.15, score: 440, contactDamage: 3.2 },
   splitter: { radius: 22, hp: 2, mass: 2.8, score: 620, contactDamage: 3.2 },
   splitterFragment: { radius: 8, hp: 1, mass: 0.42, score: 175, contactDamage: 0.8 },
+  yacht: { radius: 36, hp: 6, mass: 4.8, score: 1_800, contactDamage: 1.8 },
+  datacenter: { radius: 42, hp: 5, mass: 6.2, score: 2_400, contactDamage: 2.1 },
+  carrier: { radius: 50, hp: 5, mass: 7.4, score: 3_200, contactDamage: 3.6 },
 };
 
 const isEnemyKind = (kind: TargetKind): boolean =>
-  kind === 'swarmer' || kind === 'mine' || kind === 'splitter' || kind === 'splitterFragment';
+  kind === 'swarmer' || kind === 'mine' || kind === 'splitter'
+  || kind === 'splitterFragment' || kind === 'carrier';
 
 export class WorldSystem {
   public readonly targets: WorldTarget[];
@@ -42,20 +56,30 @@ export class WorldSystem {
   public peakActive = 0;
   public droppedSpawns = 0;
   public runSeed = 1;
+  public galleryMode = false;
   private nextId = 1;
   private nextFormationId = 1;
   private spawnTimer = 0;
   private ascentWave = 0;
   private randomSeed = 10;
   private formationCursor = 0;
-  private premiumCursor = 0;
+  private prestigeSpawnIndex = 0;
+  private readonly ambientDeck = new PremiumShuffleBag(PREMIUM_AMBIENT_KINDS);
+  private readonly prestigeDeck = new PremiumShuffleBag(PREMIUM_PRESTIGE_KINDS);
+  private readonly premiumKindsSeen = new Set<PremiumArtKind>();
 
   public constructor() {
     this.targets = Array.from({ length: TUNING.maxWorldObjects }, () => this.createEmptyTarget());
   }
 
   public reset(runSeed = 1): void {
-    for (const target of this.targets) target.active = false;
+    for (const target of this.targets) {
+      target.active = false;
+      target.carrierLaunched = false;
+      target.launchedCount = 0;
+      target.damageMask = 0;
+      target.launchTimer = 0;
+    }
     this.gravityWells.length = 0;
     this.nextId = 1;
     this.nextFormationId = 1;
@@ -64,7 +88,11 @@ export class WorldSystem {
     this.runSeed = Math.max(1, Math.floor(runSeed));
     this.randomSeed = this.runSeed * 97 + 10;
     this.formationCursor = this.runSeed % 7;
-    this.premiumCursor = this.runSeed % PREMIUM_SPAWN_SEQUENCE.length;
+    this.prestigeSpawnIndex = 0;
+    this.ambientDeck.reset(this.runSeed * 31 + 7);
+    this.prestigeDeck.reset(this.runSeed * 43 + 11);
+    this.premiumKindsSeen.clear();
+    this.galleryMode = false;
     this.spawnIntensity = 0;
     this.peakActive = 0;
     this.droppedSpawns = 0;
@@ -85,10 +113,73 @@ export class WorldSystem {
     return this.spawn(premiumGameplayKind(art), x, y, 0, 0, 0, this.nextFormationId++, false, art);
   }
 
+  public spawnPremiumGallery(damaged = false): readonly WorldTarget[] {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.galleryMode = true;
+    const spawned: WorldTarget[] = [];
+    for (let index = 0; index < PREMIUM_ART_KINDS.length; index += 1) {
+      const art = PREMIUM_ART_KINDS[index];
+      if (!art) continue;
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const target = this.spawn(
+        premiumGameplayKind(art),
+        75 + column * 150,
+        148 + row * 142,
+        0,
+        0,
+        0,
+        this.nextFormationId++,
+        true,
+        art,
+      );
+      if (!target) continue;
+      target.rotation = art === 'luxurySpaceYacht' ? -0.12 : 0;
+      target.launchTimer = Number.POSITIVE_INFINITY;
+      spawned.push(target);
+    }
+    if (damaged) this.setPremiumGalleryDamageState();
+    return spawned;
+  }
+
+  public spawnPremiumFocus(art: PremiumArtKind, damaged = false): WorldTarget | null {
+    for (const target of this.targets) target.active = false;
+    this.gravityWells.length = 0;
+    this.galleryMode = true;
+    const target = this.spawn(
+      premiumGameplayKind(art),
+      STAGE.width / 2,
+      350,
+      0,
+      0,
+      0,
+      this.nextFormationId++,
+      true,
+      art,
+    );
+    if (!target) return null;
+    target.rotation = art === 'luxurySpaceYacht' ? -0.12 : 0;
+    target.launchTimer = Number.POSITIVE_INFINITY;
+    if (damaged) this.applyGalleryDamage(target);
+    return target;
+  }
+
+  public setPremiumGalleryDamageState(): void {
+    for (const target of this.targets) {
+      if (target.active && target.premiumArt) this.applyGalleryDamage(target);
+    }
+  }
+
+  public leaveGallery(): void {
+    this.galleryMode = false;
+  }
+
   public enterOrbit(player: PlayerState): void {
     for (const target of this.targets) target.active = false;
     this.gravityWells.length = 0;
     this.spawnTimer = 1.15;
+    this.galleryMode = false;
     this.spawnOpeningCascade(player);
   }
 
@@ -96,6 +187,7 @@ export class WorldSystem {
     for (const target of this.targets) target.active = false;
     this.gravityWells.length = 0;
     this.spawnTimer = 0.7;
+    this.galleryMode = false;
     this.spawnBossEscort(0, STAGE.width / 2, 230, player);
     this.ensurePremiumTargets(player, 0, true);
   }
@@ -109,6 +201,12 @@ export class WorldSystem {
     bossPhase = 0,
     ascentSpeed = 0,
   ): void {
+    if (this.galleryMode) {
+      for (const target of this.targets) {
+        if (target.active) target.impactFlash = Math.max(0, target.impactFlash - delta * 1.2);
+      }
+      return;
+    }
     for (const well of this.gravityWells) well.phase += delta;
     for (const target of this.targets) {
       if (!target.active) continue;
@@ -118,6 +216,7 @@ export class WorldSystem {
       target.telegraph = Math.max(0, target.telegraph - delta);
       if (target.primed) target.primeTimer = Math.max(0, target.primeTimer - delta);
       target.impactFlash = Math.max(0, target.impactFlash - delta * 5.6);
+      target.launchTimer = Math.max(0, target.launchTimer - delta);
       target.rotation += target.spin * delta;
 
       if (target.telegraph > 0) continue;
@@ -137,6 +236,8 @@ export class WorldSystem {
         target.active = false;
       }
     }
+
+    if (phase === 'orbit' || phase === 'boss') this.launchCarrierDrones(player);
 
     this.peakActive = Math.max(this.peakActive, this.activeCount());
     this.spawnTimer -= delta;
@@ -161,6 +262,35 @@ export class WorldSystem {
       (count, target) => count + (target.active && target.premiumArt !== null ? 1 : 0),
       0,
     );
+  }
+
+  public activeTexturedCount(): number {
+    return this.targets.reduce(
+      (count, target) => count + (target.active && targetVisualArt(target.kind, target.premiumArt) ? 1 : 0),
+      0,
+    );
+  }
+
+  public activePrestigeCount(art?: PremiumArtKind): number {
+    return this.targets.reduce((count, target) => {
+      if (!target.active || !target.premiumArt || !isPrestigeArt(target.premiumArt)) return count;
+      return count + (art === undefined || target.premiumArt === art ? 1 : 0);
+    }, 0);
+  }
+
+  public activeCarrierDroneCount(): number {
+    return this.targets.reduce(
+      (count, target) => count + (target.active && target.carrierLaunched ? 1 : 0),
+      0,
+    );
+  }
+
+  public premiumTypesSeenCount(): number {
+    return this.premiumKindsSeen.size;
+  }
+
+  public premiumTypesSeenSnapshot(): readonly PremiumArtKind[] {
+    return PREMIUM_ART_KINDS.filter((art) => this.premiumKindsSeen.has(art));
   }
 
   public prime(target: WorldTarget, delay: number, chainDepth: number): boolean {
@@ -388,6 +518,10 @@ export class WorldSystem {
       contactDamage: 0,
       premiumArt: null,
       impactFlash: 0,
+      damageMask: 0,
+      launchTimer: 0,
+      launchedCount: 0,
+      carrierLaunched: false,
       active: false,
     };
   }
@@ -465,6 +599,7 @@ export class WorldSystem {
       TUNING.peakActiveTargets,
       17 + densityStage * 2 + Math.round(overdrive * 4) + (surge ? 12 : 0),
     );
+    this.ensurePrestigeTarget(phaseTime);
     this.ensurePremiumTargets(player, phaseTime);
     if (this.activeCount() < desired) {
       const sequence: FormationKind[] = ['wedge', 'minefield', 'arc', 'splitter', 'spiral', 'mixed', 'ring'];
@@ -546,8 +681,17 @@ export class WorldSystem {
       contactDamage: profile.contactDamage,
       premiumArt,
       impactFlash: 0,
+      damageMask: 0,
+      launchTimer: kind === 'carrier' ? 1.05 : 0,
+      launchedCount: 0,
+      carrierLaunched: false,
       active: true,
     });
+    const visualArt = targetVisualArt(kind, premiumArt);
+    if (visualArt) this.premiumKindsSeen.add(visualArt);
+    if (kind === 'yacht' || kind === 'datacenter' || kind === 'carrier') {
+      target.spin *= 0.18;
+    }
     this.nextId += 1;
     return target;
   }
@@ -575,13 +719,15 @@ export class WorldSystem {
       TUNING.minPremiumTargets,
       TUNING.maxPremiumTargets,
     );
-    let missing = desired - this.activePremiumCount();
-    while (missing > 0 && this.activeCount() < TUNING.peakActiveTargets) {
-      const art = PREMIUM_SPAWN_SEQUENCE[this.premiumCursor % PREMIUM_SPAWN_SEQUENCE.length];
-      this.premiumCursor += 1;
-      if (!art) break;
+    const activeAmbient = this.targets.reduce((count, target) => count + (
+      target.active && target.premiumArt && PREMIUM_ASSETS[target.premiumArt].role === 'ambient' ? 1 : 0
+    ), 0);
+    let missing = desired - activeAmbient;
+    while (missing > 0 && this.activeCount() < TUNING.peakActiveTargets
+      && this.activePremiumCount() < TUNING.maxPremiumTargets) {
+      const art = this.ambientDeck.draw();
       const kind = premiumGameplayKind(art);
-      const edge = this.premiumCursor % 4;
+      const edge = this.nextFormationId % 4;
       const margin = kind === 'solar' ? 48 : 38;
       const x = edge === 0
         ? -margin
@@ -611,6 +757,93 @@ export class WorldSystem {
       if (!target) break;
       missing -= 1;
     }
+  }
+
+  private ensurePrestigeTarget(phaseTime: number): void {
+    const dueTime = TUNING.prestigeSpawnTimes[this.prestigeSpawnIndex];
+    if (dueTime === undefined || phaseTime < dueTime || this.activePrestigeCount() >= TUNING.maxPrestigeTargets) return;
+    const art = this.prestigeDeck.draw();
+    if (this.activePrestigeCount(art) > 0) return;
+    if (this.activeCount() >= TUNING.peakActiveTargets) this.recycleTargets(1, -1);
+    const kind = premiumGameplayKind(art);
+    const fromLeft = this.random() > 0.5;
+    const x = kind === 'carrier' ? STAGE.width / 2 : fromLeft ? -62 : STAGE.width + 62;
+    const y = kind === 'carrier' ? 176 : 180 + this.random() * 350;
+    const vx = kind === 'datacenter' ? (fromLeft ? 17 : -17) : kind === 'yacht' ? (fromLeft ? 38 : -38) : 0;
+    const vy = kind === 'carrier' ? 7 : (this.random() - 0.5) * 15;
+    const target = this.spawn(
+      kind,
+      x,
+      y,
+      vx,
+      vy,
+      0.62,
+      this.nextFormationId++,
+      true,
+      art,
+    );
+    if (!target) return;
+    if (kind === 'carrier') target.rotation = 0;
+    if (kind === 'yacht') target.rotation = fromLeft ? -0.1 : Math.PI - 0.1;
+    this.prestigeSpawnIndex += 1;
+  }
+
+  private launchCarrierDrones(player: PlayerState): void {
+    let activeCarrierDrones = this.activeCarrierDroneCount();
+    if (activeCarrierDrones >= TUNING.maxCarrierDrones) return;
+    for (const carrier of this.targets) {
+      if (!carrier.active || carrier.kind !== 'carrier' || carrier.telegraph > 0 || carrier.launchTimer > 0) continue;
+      if (carrier.launchedCount >= TUNING.maxCarrierLaunches) continue;
+      const intactBays = [0, 1].filter((bay) => (carrier.damageMask & (1 << bay)) === 0);
+      if (intactBays.length === 0) continue;
+      const launchCount = Math.min(
+        intactBays.length,
+        TUNING.maxCarrierDrones - activeCarrierDrones,
+        TUNING.maxCarrierLaunches - carrier.launchedCount,
+      );
+      for (let index = 0; index < launchCount; index += 1) {
+        const bay = intactBays[index];
+        if (bay === undefined) continue;
+        const side = bay === 0 ? -1 : 1;
+        const dx = player.x - (carrier.x + side * 27);
+        const dy = player.y - (carrier.y + 13);
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const drone = this.spawn(
+          'swarmer',
+          carrier.x + side * 27,
+          carrier.y + 13,
+          carrier.vx + dx / distance * 118,
+          carrier.vy + dy / distance * 118,
+          0.16 + index * 0.06,
+          carrier.formationId,
+        );
+        if (!drone) continue;
+        drone.carrierLaunched = true;
+        carrier.launchedCount += 1;
+        activeCarrierDrones += 1;
+      }
+      carrier.launchTimer = intactBays.length > 1 ? 1.35 : 2.1;
+      if (activeCarrierDrones >= TUNING.maxCarrierDrones) return;
+    }
+  }
+
+  private applyGalleryDamage(target: WorldTarget): void {
+    const art = target.premiumArt;
+    if (!art) return;
+    const subsystemCount = prestigeSubsystemCount(art);
+    if (subsystemCount > 0) {
+      const damagedCount = Math.min(2, subsystemCount);
+      target.damageMask = (1 << damagedCount) - 1;
+      target.hp = Math.max(1, target.maxHp - damagedCount);
+    } else if (target.maxHp > 1) {
+      target.damageMask = 1;
+      target.hp = Math.max(1, target.maxHp - 1);
+    }
+    if (target.kind === 'mine') {
+      target.primed = true;
+      target.primeTimer = 9;
+    }
+    target.impactFlash = 0.72;
   }
 
   private random(): number {

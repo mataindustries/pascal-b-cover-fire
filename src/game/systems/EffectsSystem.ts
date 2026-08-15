@@ -122,6 +122,7 @@ export class EffectsSystem {
       inheritedVy: 0,
       seed: 0,
       delay: 0,
+      sequenceStep: 0,
     }));
   }
 
@@ -298,9 +299,49 @@ export class EffectsSystem {
 
   public premiumImpact(x: number, y: number, art: PremiumArtKind, direction?: number): void {
     const palette = PREMIUM_ASSETS[art].palette;
-    this.burst(x, y, 4, palette[0], 165, direction);
-    this.burst(x, y, 3, palette[1], 118, direction);
-    this.ring(x, y, art === 'solarPowerStation' ? 42 : 32, palette[2], 1.4);
+    const role = PREMIUM_ASSETS[art].role;
+    this.burst(x, y, role === 'prestige' ? 5 : 3, palette[0], 165, direction);
+    this.burst(x, y, 2, palette[1], 118, direction);
+    this.ring(x, y, role === 'prestige' ? 46 : art === 'solarPowerStation' ? 42 : 32, palette[2], 1.4);
+  }
+
+  public premiumSubsystemBreak(
+    art: PremiumArtKind,
+    subsystemIndex: number,
+    x: number,
+    y: number,
+    rotation: number,
+    inheritedVx: number,
+    inheritedVy: number,
+    seed: number,
+  ): void {
+    const definition = PREMIUM_ASSETS[art];
+    const detached = definition.fragments.filter((fragment) => fragment.stage === 'detached');
+    const fragment = detached[subsystemIndex % Math.max(1, detached.length)];
+    if (fragment) {
+      this.spawnPremiumFragment(
+        art,
+        fragment,
+        x,
+        y,
+        rotation,
+        inheritedVx,
+        inheritedVy,
+        seed + subsystemIndex * 31,
+        subsystemIndex,
+      );
+    }
+    const anchor = definition.damageAnchors?.[subsystemIndex];
+    const scale = definition.renderWidth;
+    const renderHeight = definition.renderWidth * definition.imageHeight / definition.imageWidth;
+    const localX = ((anchor?.x ?? 0.5) - 0.5) * scale;
+    const localY = ((anchor?.y ?? 0.5) - 0.5) * renderHeight;
+    const breakX = x + Math.cos(rotation) * localX - Math.sin(rotation) * localY;
+    const breakY = y + Math.sin(rotation) * localX + Math.cos(rotation) * localY;
+    this.burst(breakX, breakY, definition.role === 'prestige' ? 6 : 4, definition.palette[0], 215);
+    this.plasmaWisp(breakX, breakY, 2, definition.palette[1]);
+    this.smoke(breakX, breakY, definition.role === 'prestige' ? 2 : 1);
+    this.ring(breakX, breakY, definition.role === 'prestige' ? 46 : 28, definition.palette[2], 1.8);
   }
 
   public premiumDestruction(
@@ -311,28 +352,30 @@ export class EffectsSystem {
     inheritedVx: number,
     inheritedVy: number,
     seed: number,
+    detachedMask = 0,
   ): void {
     const definition = PREMIUM_ASSETS[art];
     const detached = definition.fragments.filter((fragment) => fragment.stage === 'detached');
-    const immediateCount = art === 'solarPowerStation' ? Math.min(6, detached.length) : detached.length;
-    for (let index = 0; index < immediateCount; index += 1) {
+    const maximumImmediate = definition.role === 'common' ? 4 : art === 'solarPowerStation' ? 6 : detached.length;
+    for (let index = 0; index < Math.min(maximumImmediate, detached.length); index += 1) {
+      if ((detachedMask & (1 << index)) !== 0) continue;
       const fragment = detached[index];
       if (!fragment) continue;
       this.spawnPremiumFragment(art, fragment, x, y, rotation, inheritedVx, inheritedVy, seed + index * 17, index);
     }
-    if (art === 'solarPowerStation' || art === 'alienInterceptor') {
-      const cue = this.premiumDestructionCues.find((candidate) => !candidate.active)
-        ?? this.premiumDestructionCues.reduce((oldest, candidate) => candidate.delay < oldest.delay ? candidate : oldest);
-      Object.assign(cue, {
-        active: true,
-        art,
-        x,
-        y,
-        rotation,
-        inheritedVx,
-        inheritedVy,
-        seed,
-        delay: art === 'solarPowerStation' ? 0.16 : 0.12,
+    const cueDelays = art === 'luxurySpaceYacht'
+      ? [0.11, 0.24, 0.39]
+      : art === 'crownDroneCarrier'
+        ? [0.10, 0.23, 0.38]
+        : art === 'orbitalDatacenter'
+          ? [0.15, 0.34]
+          : art === 'solarPowerStation' || art === 'alienInterceptor'
+            || art === 'hunterDrone' || art === 'antimatterReactorPod' || art === 'shieldedCargoDrone'
+            ? [art === 'antimatterReactorPod' ? 0.18 : 0.12]
+            : [];
+    if (cueDelays.length > 0) {
+      cueDelays.forEach((delay, sequenceStep) => {
+        this.queuePremiumCue(art, x, y, rotation, inheritedVx, inheritedVy, seed, delay, sequenceStep);
       });
     } else {
       this.spawnPremiumCoreFragments({
@@ -345,23 +388,30 @@ export class EffectsSystem {
         inheritedVy,
         seed,
         delay: 0,
+        sequenceStep: 0,
       });
     }
     const palette = definition.palette;
-    this.burst(x, y, art === 'fuelDepot' ? 26 : 15, palette[0], art === 'fuelDepot' ? 355 : 245);
-    this.burst(x, y, 10, palette[1], 190);
-    this.smoke(x, y, art === 'fuelDepot' || art === 'solarPowerStation' ? 5 : 3);
+    const pressurePod = art === 'fuelDepot' || art === 'antimatterReactorPod';
+    const sparkAmount = definition.role === 'common' ? (pressurePod ? 11 : 7) : pressurePod ? 18 : 11;
+    this.burst(x, y, sparkAmount, palette[0], pressurePod ? 355 : 245);
+    this.burst(x, y, definition.role === 'common' ? 4 : 7, palette[1], 190);
+    this.smoke(x, y, pressurePod || art === 'solarPowerStation' ? 4 : definition.role === 'prestige' ? 5 : 2);
     this.plasmaWisp(
       x,
       y,
-      art === 'alienInterceptor' || art === 'observationModule' ? 5 : 3,
-      art === 'fuelDepot' ? '#FF8B24' : palette[2],
+      art === 'alienInterceptor' || art === 'hunterDrone' || art === 'observationModule' ? 5 : 3,
+      pressurePod ? '#FF8B24' : palette[2],
     );
-    if (art === 'fuelDepot') {
+    if (pressurePod) {
       this.ring(x, y, 154, '#FFF8E8', 4.8);
       this.ring(x, y, 119, '#FF8B24', 3.2);
+    } else if (art === 'orbitalDatacenter') {
+      this.ring(x, y, 188, '#5BE5FF', 4.2);
+      this.ring(x, y, 132, '#DDFBFF', 2.2);
     } else {
-      this.ring(x, y, art === 'solarPowerStation' ? 104 : 72, palette[2], 2.4);
+      const radius = definition.role === 'prestige' ? 132 : art === 'solarPowerStation' ? 104 : 72;
+      this.ring(x, y, radius, palette[2], definition.role === 'prestige' ? 3.4 : 2.4);
     }
   }
 
@@ -569,28 +619,89 @@ export class EffectsSystem {
 
   private spawnPremiumCoreFragments(cue: PremiumDestructionCue): void {
     const definition = PREMIUM_ASSETS[cue.art];
-    const core = definition.fragments.filter((fragment) => fragment.stage === 'core');
-    for (let index = 0; index < core.length; index += 1) {
-      const fragment = core[index];
-      if (!fragment) continue;
-      this.spawnPremiumFragment(
-        cue.art,
-        fragment,
-        cue.x,
-        cue.y,
-        cue.rotation,
-        cue.inheritedVx,
-        cue.inheritedVy,
-        cue.seed + 97 + index * 23,
-        index + 6,
-      );
+    const finalStep = cue.art === 'luxurySpaceYacht' || cue.art === 'crownDroneCarrier'
+      ? 2
+      : cue.art === 'orbitalDatacenter' ? 1 : 0;
+    const sequenceAngle = cue.seed * 0.037 + cue.sequenceStep * 2.1;
+    const offset = definition.role === 'prestige' ? 18 + cue.sequenceStep * 7 : 0;
+    const sequenceX = cue.x + Math.cos(sequenceAngle) * offset;
+    const sequenceY = cue.y + Math.sin(sequenceAngle) * offset;
+    if (cue.sequenceStep >= finalStep) {
+      const core = definition.fragments.filter((fragment) => fragment.stage === 'core');
+      for (let index = 0; index < core.length; index += 1) {
+        const fragment = core[index];
+        if (!fragment) continue;
+        this.spawnPremiumFragment(
+          cue.art,
+          fragment,
+          cue.x,
+          cue.y,
+          cue.rotation,
+          cue.inheritedVx,
+          cue.inheritedVy,
+          cue.seed + 97 + index * 23,
+          index + 6,
+        );
+      }
     }
     if (cue.art === 'solarPowerStation') {
       this.explosion(cue.x, cue.y, 'cascade', '#FF9C32');
     } else if (cue.art === 'alienInterceptor') {
       this.explosion(cue.x, cue.y, 'burst', '#FF6A22');
       this.burst(cue.x, cue.y, 12, '#2CBAFF', 270);
+    } else if (cue.art === 'hunterDrone') {
+      this.burst(cue.x, cue.y, 7, '#FF6A22', 220);
+      this.burst(cue.x, cue.y + 5, 5, '#2CBAFF', 185);
+    } else if (cue.art === 'antimatterReactorPod') {
+      this.burst(cue.x, cue.y, 14, '#FFF8EA', 390);
+      this.ring(cue.x, cue.y, 176, '#FFF8EA', 5.2);
+      this.flash = Math.max(this.flash, this.reducedMotion ? 0.1 : 0.24);
+    } else if (cue.art === 'shieldedCargoDrone') {
+      this.burst(cue.x, cue.y, 9, '#48DBFF', 250);
+      this.ring(cue.x, cue.y, 96, '#66E8FF', 3.2);
+    } else if (cue.art === 'luxurySpaceYacht') {
+      this.burst(sequenceX, sequenceY, cue.sequenceStep >= finalStep ? 12 : 6, cue.sequenceStep === 1 ? '#D9AB43' : '#F8F5EA', 270);
+      this.plasmaWisp(sequenceX, sequenceY, 3, cue.sequenceStep === 0 ? '#317CFF' : '#D9AB43');
+      this.ring(sequenceX, sequenceY, 58 + cue.sequenceStep * 24, '#F8E8C1', 2.2);
+    } else if (cue.art === 'orbitalDatacenter') {
+      this.burst(sequenceX, sequenceY, cue.sequenceStep >= finalStep ? 14 : 7, '#5BE5FF', 285);
+      this.plasmaWisp(sequenceX, sequenceY, 5, '#35D5FF');
+      if (cue.sequenceStep >= finalStep) this.ring(cue.x, cue.y, 206, '#5BE5FF', 5.2);
+    } else if (cue.art === 'crownDroneCarrier') {
+      this.burst(sequenceX, sequenceY, cue.sequenceStep >= finalStep ? 16 : 7, cue.sequenceStep >= finalStep ? '#FFF4E3' : '#2ABEFF', 320);
+      this.ring(sequenceX, sequenceY, 64 + cue.sequenceStep * 31, cue.sequenceStep >= finalStep ? '#FF8724' : '#2ABEFF', 3.4);
+      if (cue.sequenceStep >= finalStep) {
+        this.flash = Math.max(this.flash, this.reducedMotion ? 0.11 : 0.29);
+        this.shake(9.5, 0.4);
+      }
     }
+  }
+
+  private queuePremiumCue(
+    art: PremiumArtKind,
+    x: number,
+    y: number,
+    rotation: number,
+    inheritedVx: number,
+    inheritedVy: number,
+    seed: number,
+    delay: number,
+    sequenceStep: number,
+  ): void {
+    const cue = this.premiumDestructionCues.find((candidate) => !candidate.active)
+      ?? this.premiumDestructionCues.reduce((oldest, candidate) => candidate.delay < oldest.delay ? candidate : oldest);
+    Object.assign(cue, {
+      active: true,
+      art,
+      x,
+      y,
+      rotation,
+      inheritedVx,
+      inheritedVy,
+      seed,
+      delay,
+      sequenceStep,
+    });
   }
 
   private spawnPremiumFragment(

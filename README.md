@@ -19,7 +19,7 @@ Open the URL printed by Vite. The server listens on all interfaces for Codespace
 
 | Command | Purpose |
 | --- | --- |
-| `npm run assets:premium` | Alpha-crop and resize the six preserved premium source PNGs into transparent runtime WebP files |
+| `npm run assets:premium` | Alpha-crop and resize the twelve preserved premium source PNGs into transparent runtime WebP files |
 | `npm run dev` | Start the development server on `0.0.0.0` |
 | `npm run build` | Strict TypeScript compile and production build |
 | `npm run preview` | Preview the production build on `0.0.0.0` |
@@ -56,7 +56,9 @@ Audio starts only after a user gesture. Sound, volume, reset, reduced-motion sup
 
 ## Gameplay loop
 
-The playable run moves without loading screens through a short shaft ritual, a 2.75-second ascent montage, about 60 seconds of formation-driven orbital panic, a three-weak-point mothership breach, results, persistent upgrades, and immediate replay. Swarmers converge in wedges, arcs, rings, and spirals; volatile mines and premium fuel depots prime nearby targets; Splitters and premium interceptors become aggressive fragments; communications satellites, solar stations, gold telescopes, observation modules, and junk supply neutral halo mass. Every destruction can propagate a bounded gameplay shockwave. Three to eight recognizable premium targets share the arena with the small vector roster, depending on wave pressure.
+The playable run moves without loading screens through a short shaft ritual, a 2.75-second ascent montage, about 60 seconds of formation-driven orbital panic, a three-weak-point mothership breach, results, persistent upgrades, and immediate replay. Hunter Drone sprites now carry the original Swarmer rules; Antimatter Reactor Pods carry the volatile-mine rules; Shielded Cargo Drones carry the Splitter rules and release cropped cargo-lobe children. Communications satellites, solar stations, gold telescopes, observation modules, interceptors, and junk supply halo mass. Five to eight ambient premium targets use a deterministic shuffle bag, while a separate seeded prestige bag schedules rare yacht, datacenter, and carrier contacts without duplicate large bodies.
+
+The Luxury Space Yacht has five detachable passenger/solar/engine sections and a restrained prestige jackpot. The Orbital Datacenter gates its compute core behind four independently selected server wings and ends in a cyan propagating data-collapse wave. The Crown Drone Carrier loses two launch bays, two armored fins, then its orange core; intact bays launch at most six Hunter Drones per carrier and no more than eight carrier drones may be active. At most two prestige targets coexist. These additions do not alter controls, Core Burst, run timing, upgrades, economy structure, or the final mothership.
 
 Collected wreckage forms a compact 2–3-band contact-damage halo with four named tiers at 8, 24, 54, and 96 tonnes. Active halo mass is capped at 128 tonnes while peak captured mass remains a result stat. Keeping mass improves protection and contact power; Core Burst requires 15 tonnes plus full charge, retains 56–73.5% depending on Magnetic Rim, always drops a full halo by at least one tier, and launches up to 28 penetrating shards plus a mine-priming radial wave. Rapid destruction and danger grazing build temporary Overdrive, which raises speed, score, spawn pressure, color, and synth intensity without granting invulnerability. The mothership uses the same contacts, shockwaves, mines, and Core Burst rules as the arena—there is no boss-escape countdown.
 
@@ -66,18 +68,18 @@ Three persistent tracks are available: Launch Pressure, Reinforced Cover, and Ma
 
 - `src/game/Game.ts` owns the fixed-step state machine and run lifecycle.
 - `art-source/premium-targets/` preserves the untouched supplied RGBA PNGs; `public/assets/premium/` contains alpha-cropped WebP runtime derivatives.
-- `src/game/assets/` defines preload/fallback behavior, target-to-art mapping, palettes, scale, and authored fragment crop regions.
+- `src/game/assets/` defines preload/fallback behavior, geometry-retirement mappings, palettes, scale, damage anchors, and authored fragment crop regions.
 - `src/game/config.ts` centralizes mobile budgets and tuning.
 - `src/game/logic/` contains tested pure combo, chain eligibility/milestones, halo/Core Burst, Overdrive, scoring, persistence, and upgrade rules.
 - `src/game/systems/` separates 2-D input, voice-limited audio, gameplay-wave/Burst pools, visual effects, halo debris, UI, and formation-driven world objects.
 - `src/game/render/Renderer.ts` draws environments, preloaded premium sprites, procedural fallbacks, trajectory prediction, the cover, and debug bounds.
 - `tests/` contains pure-logic coverage plus a Playwright mobile flow that completes a run, buys an upgrade, and restarts.
 
-Simulation uses a fixed 60 Hz step with bounded catch-up and remains safe when rendering falls toward 30 FPS. Cover and Core Burst impacts use swept checks. The runtime preallocates 72 target slots with a 50-active gameplay peak, 36 halo orbiters, 28 Burst shards, 12 gameplay waves, 220 cosmetic particles, 12 visual rings, 24 causal connector flashes, 48 recognizable premium wreckage pieces, and 8 staged-breakup cues. Splitter and boss payloads recycle lower-priority pooled targets at saturation, and Burst/mine waves recycle an expiring ordinary gameplay wave rather than losing the signature action. Propagation is non-recursive and processes at most 16 target-wave impacts per fixed step. Slow frame-time hysteresis reduces cosmetic emissions without changing enemy logic. The canvas preserves its geometry in tall phone viewports, reserves the lower action-button zone, and caps device-pixel ratio at 2.
+Simulation uses a fixed 60 Hz step with bounded catch-up and remains safe when rendering falls toward 30 FPS. Cover and Core Burst impacts use swept checks. The runtime preallocates 72 target slots with a 50-active gameplay peak, 36 halo orbiters, 28 Burst shards, 12 gameplay waves, 180 cosmetic sparks/wisps, 12 visual rings, 24 causal connector flashes, 48 recognizable premium wreckage pieces, and 8 staged-breakup cues. Carrier payloads add no recursive spawners and remain inside the same target pool. Splitter and boss payloads recycle lower-priority pooled targets at saturation, and Burst/mine/data waves recycle an expiring ordinary gameplay wave rather than losing the signature action. Propagation is non-recursive and processes at most 16 target-wave impacts per fixed step. Slow frame-time hysteresis reduces cosmetic emissions without changing enemy logic. The canvas preserves its geometry in tall phone viewports, reserves the lower action-button zone, and caps device-pixel ratio at 2.
 
 ## Debug mode
 
-Append `?debug=1` to the URL. It shows FPS, state/time, position and velocity, enemy/target counts, visual and gameplay waves, Burst shards, particles, halo tier/charge, Overdrive, spawn pressure, run seed, peak counts, drops, and combo timing. Controls enter the arena, start the mothership, spawn Swarmer/mine/Splitter formations, and fill Core Burst. The panel and collision bounds are absent in normal play.
+Append `?debug=1` to the URL. It shows FPS, state/time, position and velocity, enemy/target/textured counts, loaded assets, premium types seen, carrier drones, visual and gameplay waves, Burst shards, particles, halo tier/charge, Overdrive, spawn pressure, run seed, peak counts, drops, and combo timing. Controls enter the arena, start the mothership, spawn formations, fill Core Burst, show all twelve premium bodies or damage states, cycle one asset at a time, damage/destroy the focused asset, and trigger a live carrier incursion. The panel and collision bounds are absent in normal play.
 
 ## Phone preview in Codespaces
 
@@ -101,7 +103,7 @@ The application is a single static entry point and uses no client router, server
 ## Current limitations
 
 - One cover, one orbital arena, one compact enemy roster, and one mothership are intentionally in scope.
-- Premium target and mothership art is integrated; the player cover, small swarm roster, environments, UI, and most effects remain procedural.
+- Premium target and mothership art is integrated; the player cover, ascent-only objects, environments, UI, telegraphs, shields, collision guides, and shockwaves remain procedural by design.
 - Progress is browser-local; there are no accounts, cloud sync, or leaderboard.
 - The automated browser pass targets mobile Chromium. Physical-device Safari and a wider Android hardware matrix remain a release-testing task.
 - There is no installable/offline PWA layer yet.

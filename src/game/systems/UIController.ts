@@ -41,6 +41,12 @@ export interface UICallbacks {
   coreBurst(): void;
   spawnFormation(kind: FormationKind): void;
   fillBurst(): void;
+  premiumGallery(): void;
+  premiumGalleryDamage(): void;
+  nextPremium(): void;
+  damagePremium(): void;
+  destroyPremium(): void;
+  carrierIncursion(): void;
 }
 
 const queryRequired = <T extends Element>(parent: ParentNode, selector: string): T => {
@@ -229,7 +235,9 @@ export class UIController {
       `FX WAVES ${snapshot.shockwaves}`,
       `HULL FX ${snapshot.hullFragments}`,
       `PREMIUM ${snapshot.premiumTargets} · WRECK ${snapshot.premiumFragments}`,
-      `ASSETS ${snapshot.premiumAssetsLoaded}/7 · FAIL ${snapshot.premiumAssetFailures}`,
+      `TEXTURED ${snapshot.texturedTargets}/${snapshot.targets} · TYPES ${snapshot.premiumTypesSeen}`,
+      `ASSETS ${snapshot.premiumAssetsLoaded}/13 · FAIL ${snapshot.premiumAssetFailures}`,
+      `CARRIER DRONES ${snapshot.carrierDrones}/${8}`,
       `GAME WAVES ${snapshot.gameplayWaves}`,
       `SHARDS ${snapshot.burstShards}`,
       `HALO ${snapshot.haloOrbiters} / T${snapshot.haloTier}`,
@@ -290,6 +298,12 @@ export class UIController {
       queryRequired<HTMLButtonElement>(app, '#debug-mines').addEventListener('click', () => this.callbacks.spawnFormation('minefield'), options);
       queryRequired<HTMLButtonElement>(app, '#debug-splitters').addEventListener('click', () => this.callbacks.spawnFormation('splitter'), options);
       queryRequired<HTMLButtonElement>(app, '#debug-fill-burst').addEventListener('click', this.callbacks.fillBurst, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-premium-gallery').addEventListener('click', this.callbacks.premiumGallery, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-premium-damage-all').addEventListener('click', this.callbacks.premiumGalleryDamage, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-premium-next').addEventListener('click', this.callbacks.nextPremium, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-premium-damage').addEventListener('click', this.callbacks.damagePremium, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-premium-destroy').addEventListener('click', this.callbacks.destroyPremium, options);
+      queryRequired<HTMLButtonElement>(app, '#debug-carrier-incursion').addEventListener('click', this.callbacks.carrierIncursion, options);
     }
 
     app.querySelectorAll<HTMLButtonElement>('[data-action="settings-open"]').forEach((button) => {
@@ -446,6 +460,9 @@ export class UIController {
               <div><button id="debug-breach">BREACH +1</button><button id="debug-destroy-boss">FINAL FX</button></div>
               <div><button id="debug-swarm">SWARM</button><button id="debug-mines">MINES</button><button id="debug-splitters">SPLIT</button></div>
               <div><button id="debug-fill-burst">FILL BURST</button></div>
+              <div><button id="debug-premium-gallery">ROSTER</button><button id="debug-premium-damage-all">DAMAGE ALL</button></div>
+              <div><button id="debug-premium-next">NEXT ART</button><button id="debug-premium-damage">DAMAGE</button><button id="debug-premium-destroy">DESTROY</button></div>
+              <div><button id="debug-carrier-incursion">CARRIER INCURSION</button></div>
             </section>` : ''}
         </section>
         <aside class="desktop-placard" aria-hidden="true"><span>PROJECT 57-B</span><b>ORBITAL INCIDENT CONSOLE</b><small>AUTHORIZED PERSONNEL ONLY</small></aside>

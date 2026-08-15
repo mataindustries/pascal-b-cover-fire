@@ -8,12 +8,20 @@ const sourceDirectory = path.join(repositoryRoot, 'art-source', 'premium-targets
 const outputDirectory = path.join(repositoryRoot, 'public', 'assets', 'premium');
 
 const assets = [
-  ['PASCAL_B_COMMUNICATIONS_SATELLITE.png', 'communications-satellite.webp'],
-  ['PASCAL_B_GOLD_TELESCOPE.png', 'gold-telescope.webp'],
-  ['PASCAL_B_FUEL_DEPOT.png', 'fuel-depot.webp'],
-  ['PASCAL_B_SOLAR_POWER_STATION.png', 'solar-power-station.webp'],
-  ['PASCAL_B_OBSERVATION_MODULE.png', 'observation-module.webp'],
-  ['PASCAL_B_ALIEN_INTERCEPTOR.png', 'alien-interceptor.webp'],
+  ['PASCAL_B_COMMUNICATIONS_SATELLITE.png', 'communications-satellite.webp', 512, 0.9],
+  ['PASCAL_B_GOLD_TELESCOPE.png', 'gold-telescope.webp', 512, 0.9],
+  ['PASCAL_B_FUEL_DEPOT.png', 'fuel-depot.webp', 512, 0.9],
+  ['PASCAL_B_SOLAR_POWER_STATION.png', 'solar-power-station.webp', 512, 0.9],
+  ['PASCAL_B_OBSERVATION_MODULE.png', 'observation-module.webp', 512, 0.9],
+  ['PASCAL_B_ALIEN_INTERCEPTOR.png', 'alien-interceptor.webp', 512, 0.9],
+  // Common bodies are deliberately smaller: their on-screen footprint is 30–48 logical pixels.
+  ['PASCAL_B_HUNTER_DRONE.png', 'hunter-drone.webp', 192, 0.82],
+  ['PASCAL_B_ANTIMATTER_REACTOR_POD.png', 'antimatter-reactor-pod.webp', 224, 0.84],
+  ['PASCAL_B_SHIELDED_CARGO_DRONE.png', 'shielded-cargo-drone.webp', 256, 0.84],
+  // Prestige targets retain more source detail for damage overlays and authored crop fragments.
+  ['PASCAL_B_LUXURY_SPACE_YACHT.png', 'luxury-space-yacht.webp', 640, 0.89],
+  ['PASCAL_B_ORBITAL_DATACENTER.png', 'orbital-datacenter.webp', 640, 0.89],
+  ['PASCAL_B_CROWN_DRONE_CARRIER.png', 'crown-drone-carrier.webp', 640, 0.89],
 ];
 
 await mkdir(outputDirectory, { recursive: true });
@@ -21,10 +29,10 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 
 try {
-  for (const [sourceName, outputName] of assets) {
+  for (const [sourceName, outputName, maximumDimension, quality] of assets) {
     const source = await readFile(path.join(sourceDirectory, sourceName));
     const sourceUrl = `data:image/png;base64,${source.toString('base64')}`;
-    const processed = await page.evaluate(async ({ sourceUrl: url, maximumDimension }) => {
+    const processed = await page.evaluate(async ({ sourceUrl: url, maximumDimension, quality: outputQuality }) => {
       const image = new Image();
       image.src = url;
       await image.decode();
@@ -85,12 +93,12 @@ try {
       );
 
       return {
-        dataUrl: outputCanvas.toDataURL('image/webp', 0.9),
+        dataUrl: outputCanvas.toDataURL('image/webp', outputQuality),
         width,
         height,
         crop: [cropLeft, cropTop, cropWidth, cropHeight],
       };
-    }, { sourceUrl, maximumDimension: 512 });
+    }, { sourceUrl, maximumDimension, quality });
 
     const encoded = processed.dataUrl.slice(processed.dataUrl.indexOf(',') + 1);
     await writeFile(path.join(outputDirectory, outputName), Buffer.from(encoded, 'base64'));

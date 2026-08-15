@@ -39,22 +39,25 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   const openingSnapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
   expect(openingSnapshot?.largestCombo).toBeGreaterThanOrEqual(5);
   expect(openingSnapshot?.targets).toBeLessThanOrEqual(50);
-  expect(openingSnapshot?.premiumTargets).toBeGreaterThanOrEqual(3);
+  expect(openingSnapshot?.premiumTargets).toBeGreaterThanOrEqual(5);
   expect(openingSnapshot?.premiumTargets).toBeLessThanOrEqual(8);
-  expect(openingSnapshot?.premiumAssetsLoaded).toBe(7);
+  expect(openingSnapshot?.texturedTargets).toBeGreaterThanOrEqual(Math.floor((openingSnapshot?.targets ?? 0) * 0.7));
+  expect(openingSnapshot?.premiumAssetsLoaded).toBe(13);
   expect(openingSnapshot?.premiumAssetFailures).toBe(0);
 
   await page.locator('#debug-mines').click();
   await page.locator('#debug-fill-burst').click();
   const beforeBurst = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
   await expect(page.locator('#core-burst-button')).toBeEnabled();
-  await page.locator('#core-burst-button').click();
-  await page.waitForTimeout(90);
-  const afterBurst = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  const afterBurst = await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>('#core-burst-button')?.click();
+    return window.__PASCAL_B_DEBUG__?.snapshot();
+  });
   expect(afterBurst?.mass).toBeLessThan(beforeBurst?.mass ?? 0);
   expect(afterBurst?.peakMass).toBeGreaterThanOrEqual(beforeBurst?.mass ?? 0);
   expect(afterBurst?.burstCharge).toBeLessThan(0.01);
   expect((afterBurst?.burstShards ?? 0) + (afterBurst?.gameplayWaves ?? 0)).toBeGreaterThan(0);
+  await page.waitForTimeout(90);
   await page.screenshot({ path: testInfo.outputPath('core-burst-mobile.png'), fullPage: true });
 
   await page.locator('#pause-button').click();
@@ -111,7 +114,7 @@ test('mobile launch-to-results loop, upgrade, pause, and restart stay healthy', 
   const secondRunPools = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
   expect(secondRunPools?.targets).toBeLessThanOrEqual(50);
   expect(secondRunPools?.enemies).toBeLessThanOrEqual(50);
-  expect(secondRunPools?.particles).toBeLessThanOrEqual(220);
+  expect(secondRunPools?.particles).toBeLessThanOrEqual(180);
   expect(secondRunPools?.haloOrbiters).toBeLessThanOrEqual(36);
   expect(secondRunPools?.shockwaves).toBeLessThanOrEqual(12);
   expect(secondRunPools?.premiumFragments).toBeLessThanOrEqual(48);
@@ -206,12 +209,12 @@ test('premium mothership and all reactor anchors fit a 360 by 640 portrait', asy
   expect(spriteLoaded).toBe(true);
 });
 
-test('premium target files preload and a failed image falls back without console errors', async ({ page }) => {
+test('premium target files preload and a failed image falls back without console errors', async ({ page }, testInfo) => {
   const consoleErrors: string[] = [];
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
-  await page.route('**/assets/premium/fuel-depot.webp', (route) => route.fulfill({
+  await page.route('**/assets/premium/hunter-drone.webp', (route) => route.fulfill({
     status: 200,
     contentType: 'image/webp',
     body: 'intentionally invalid image payload',
@@ -220,12 +223,50 @@ test('premium target files preload and a failed image falls back without console
   await page.evaluate(() => window.__PASCAL_B_DEBUG__?.enterArena());
   await page.waitForTimeout(1_000);
   const snapshot = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
-  expect(snapshot?.premiumAssetsLoaded).toBe(6);
+  expect(snapshot?.premiumAssetsLoaded).toBe(12);
   expect(snapshot?.premiumAssetFailures).toBe(1);
-  expect(snapshot?.premiumTargets).toBeGreaterThanOrEqual(3);
+  expect(snapshot?.premiumTargets).toBeGreaterThanOrEqual(5);
   const assetRequests = await page.evaluate(() => performance.getEntriesByType('resource')
     .filter((entry) => entry.name.includes('/assets/premium/')).length);
-  expect(assetRequests).toBeGreaterThanOrEqual(5);
+  expect(assetRequests).toBeGreaterThanOrEqual(12);
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.focusPremium('hunterDrone'));
+  await page.locator('#debug-panel').evaluate((panel) => panel.setAttribute('style', 'display: none !important'));
+  await page.screenshot({ path: testInfo.outputPath('hunter-drone-fallback-mobile.png'), fullPage: true });
+  expect(consoleErrors).toEqual([]);
+});
+
+test('premium debug roster exposes every body, damage state, and staged destruction', async ({ page }, testInfo) => {
+  const consoleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => consoleErrors.push(error.message));
+  await page.goto('/?debug=1');
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.premiumGallery());
+  await page.waitForTimeout(250);
+  const roster = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(roster?.targets).toBe(12);
+  expect(roster?.texturedTargets).toBe(12);
+  expect(roster?.premiumAssetsLoaded).toBe(13);
+  await page.locator('#debug-panel').evaluate((panel) => panel.setAttribute('style', 'display: none !important'));
+  await page.screenshot({ path: testInfo.outputPath('premium-roster-mobile.png'), fullPage: true });
+
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.premiumGallery(true));
+  await page.waitForTimeout(180);
+  await page.screenshot({ path: testInfo.outputPath('premium-damage-states-mobile.png'), fullPage: true });
+
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.focusPremium('orbitalDatacenter'));
+  for (let wing = 0; wing < 4; wing += 1) {
+    await page.evaluate(() => window.__PASCAL_B_DEBUG__?.damagePremium());
+  }
+  await page.waitForTimeout(160);
+  await page.screenshot({ path: testInfo.outputPath('datacenter-four-wings-mobile.png'), fullPage: true });
+  await page.evaluate(() => window.__PASCAL_B_DEBUG__?.destroyPremium());
+  await page.waitForTimeout(420);
+  const collapse = await page.evaluate(() => window.__PASCAL_B_DEBUG__?.snapshot());
+  expect(collapse?.premiumFragments).toBeLessThanOrEqual(48);
+  expect(collapse?.shockwaves).toBeLessThanOrEqual(12);
+  await page.screenshot({ path: testInfo.outputPath('datacenter-collapse-mobile.png'), fullPage: true });
   expect(consoleErrors).toEqual([]);
 });
 
